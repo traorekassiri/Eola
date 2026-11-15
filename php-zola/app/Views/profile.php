@@ -4,6 +4,7 @@
     <a href="/discover" class="zola-brand">ZOLA</a>
     <nav class="zola-links">
       <a href="/discover">Découvrir</a>
+      <a href="/favorites">Favoris</a>
       <a href="/messages">Messages</a>
       <a href="/profile">Mon profil</a>
       <a href="/settings">Paramètres</a>
@@ -32,7 +33,11 @@
         <button type="submit" class="zola-btn-primary">Enregistrer les modifications</button>
       </form>
     <?php else: ?>
-      <button type="button" class="zola-btn-primary" data-like-id="<?= (int) $profile['id'] ?>">J'aime</button>
+      <div class="zola-actions-row">
+        <button type="button" class="zola-btn-primary" data-like-id="<?= (int) $profile['id'] ?>">J'aime</button>
+        <button type="button" class="zola-btn-outline" data-favorite-id="<?= (int) $profile['id'] ?>">Sauvegarder en favori</button>
+        <button type="button" class="zola-btn-danger" data-block-id="<?= (int) $profile['id'] ?>">Bloquer ce profil</button>
+      </div>
     <?php endif; ?>
   </section>
 </main>

@@ -20,6 +20,7 @@ import {
 import { db, hashPassword, initDatabase, verifyPassword } from './server/db.ts';
 import { stripJpegExifInPlace, validateMagicBytes } from './server/media.ts';
 import { computeAge, getFullUserProfile, resolveCountryCode } from './server/queries.ts';
+import { buildOtpAuthUri, generateTotpSecret, verifyTotpCode } from './server/totp.ts';
 
 initDatabase();
 
@@ -32,6 +33,10 @@ if (!fs.existsSync(VERIFICATION_DIR)) fs.mkdirSync(VERIFICATION_DIR, { recursive
 const PAYMENT_SECRET =
   process.env.PAYMENT_WEBHOOK_SECRET ||
   crypto.createHash('sha256').update(process.cwd() + '_zola_pay_hmac').digest('hex');
+
+const SASPAY_BASE_URL = (process.env.SASPAY_BASE_URL || 'https://api.saspay.me/api/v1').replace(/\/+$/, '');
+const SASPAY_SECRET_KEY = (process.env.SASPAY_SECRET_KEY || '').trim();
+const SASPAY_WEBHOOK_SECRET = (process.env.SASPAY_WEBHOOK_SECRET || PAYMENT_SECRET).trim();
 
 const imageStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
@@ -131,7 +136,14 @@ async function sendTransactionalEmail(toEmail: string, subject: string, htmlCont
 }
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(
+  express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+    },
+  })
+);
 app.use('/media', express.static(MEDIA_DIR));
 app.use('/uploads', express.static(UPLOAD_DIR));
 app.use(attachAuth);
@@ -179,6 +191,13 @@ wss.on('connection', (ws, req) => {
         .prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?')
         .get(convId, userId) as { user_id: number } | undefined;
       if (!other) return;
+
+      const blocked = db
+        .prepare(
+          'SELECT 1 FROM blocked_users WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)'
+        )
+        .get(userId, other.user_id, other.user_id, userId);
+      if (blocked) return;
 
       const allowedRelay = new Set([
         'typing:start',
@@ -361,7 +380,13 @@ app.post('/api/auth/register', (req, res) => {
   });
 
   const userId = tx();
-  const { cookieValue, csrfToken, maxAgeMs } = createSessionCookie(userId, 'user', false);
+  const { cookieValue, csrfToken, maxAgeMs } = createSessionCookie(
+    userId,
+    'user',
+    false,
+    String(req.headers['user-agent'] || 'Navigateur Web'),
+    req.ip || '0.0.0.0'
+  );
   res.cookie('zola_session', cookieValue, {
     httpOnly: true,
     sameSite: 'lax',
@@ -376,7 +401,7 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 app.post('/api/auth/login', (req, res) => {
-  const { email, password, remember_me } = req.body ?? {};
+  const { email, password, remember_me, totp_code } = req.body ?? {};
   const cleanEmail = String(email || '').trim().toLowerCase();
   const ip = req.ip || 'unknown';
   const limitKey = `login:${ip}:${cleanEmail}`;
@@ -390,8 +415,17 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const user = db
-    .prepare('SELECT id, password_hash, role, status FROM users WHERE email = ?')
-    .get(cleanEmail) as { id: number; password_hash: string; role: string; status: string } | undefined;
+    .prepare('SELECT id, password_hash, role, status, two_factor_enabled, two_factor_secret FROM users WHERE email = ?')
+    .get(cleanEmail) as
+    | {
+        id: number;
+        password_hash: string;
+        role: string;
+        status: string;
+        two_factor_enabled: number;
+        two_factor_secret: string | null;
+      }
+    | undefined;
 
   if (!user || !verifyPassword(String(password || ''), user.password_hash)) {
     res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
@@ -403,10 +437,27 @@ app.post('/api/auth/login', (req, res) => {
     return;
   }
 
+  if (user.two_factor_enabled && user.two_factor_secret) {
+    if (!totp_code) {
+      res.status(200).json({ two_factor_required: true });
+      return;
+    }
+    if (!verifyTotpCode(user.two_factor_secret, String(totp_code))) {
+      res.status(401).json({ error: 'Code d’authentification à deux facteurs (2FA) invalide.' });
+      return;
+    }
+  }
+
   resetRateLimit(limitKey);
   db.prepare("UPDATE users SET is_online = 1, last_seen_at = datetime('now') WHERE id = ?").run(user.id);
 
-  const { cookieValue, csrfToken, maxAgeMs } = createSessionCookie(user.id, user.role, Boolean(remember_me));
+  const { cookieValue, csrfToken, maxAgeMs } = createSessionCookie(
+    user.id,
+    user.role,
+    Boolean(remember_me),
+    String(req.headers['user-agent'] || 'Navigateur Web'),
+    ip
+  );
   res.cookie('zola_session', cookieValue, {
     httpOnly: true,
     sameSite: 'lax',
@@ -522,7 +573,9 @@ app.get('/api/discover', requireAuth, (req: AuthenticatedRequest, res) => {
          AND u.id NOT IN (SELECT to_user_id FROM passes WHERE from_user_id = ?)
          AND u.id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = ?)
          AND u.id NOT IN (SELECT blocker_id FROM blocked_users WHERE blocked_id = ?)
-       ORDER BY u.is_online DESC, datetime(u.last_seen_at) DESC`
+       ORDER BY EXISTS(SELECT 1 FROM profile_boosts pb WHERE pb.user_id = u.id AND datetime(pb.expires_at) > datetime('now')) DESC,
+                u.is_online DESC,
+                datetime(u.last_seen_at) DESC`
     )
     .all(meId, meId, meId, meId) as Array<{ id: number }>;
 
@@ -544,7 +597,11 @@ app.get('/api/discover', requireAuth, (req: AuthenticatedRequest, res) => {
     });
 
   if (sortMode === 'compatibility') {
-    filtered.sort((a, b) => (b.compatibility_score || 0) - (a.compatibility_score || 0));
+    filtered.sort((a, b) => {
+      const boostDiff = Number(Boolean(b.is_boosted)) - Number(Boolean(a.is_boosted));
+      if (boostDiff !== 0) return boostDiff;
+      return (b.compatibility_score || 0) - (a.compatibility_score || 0);
+    });
   }
 
   const total = filtered.length;
@@ -580,10 +637,20 @@ app.delete('/api/passes', requireAuth, (req: AuthenticatedRequest, res) => {
 });
 
 app.get('/api/likes/received', requireAuth, (req: AuthenticatedRequest, res) => {
-  const me = getFullUserProfile(req.auth!.userId, req.auth!.userId);
+  const meId = req.auth!.userId;
+  const me = getFullUserProfile(meId, meId);
   const rows = db
-    .prepare('SELECT from_user_id FROM likes WHERE to_user_id = ? ORDER BY created_at DESC')
-    .all(req.auth!.userId) as Array<{ from_user_id: number }>;
+    .prepare(
+      `SELECT l.from_user_id
+       FROM likes l
+       JOIN users u ON u.id = l.from_user_id
+       WHERE l.to_user_id = ?
+         AND u.status = 'active'
+         AND l.from_user_id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = ?)
+         AND l.from_user_id NOT IN (SELECT blocker_id FROM blocked_users WHERE blocked_id = ?)
+       ORDER BY l.created_at DESC`
+    )
+    .all(meId, meId, meId) as Array<{ from_user_id: number }>;
 
   if (!me?.is_premium) {
     res.json({ locked: true, count: rows.length, profiles: [] });
@@ -591,7 +658,7 @@ app.get('/api/likes/received', requireAuth, (req: AuthenticatedRequest, res) => 
   }
 
   const profiles = rows
-    .map((r) => getFullUserProfile(r.from_user_id, req.auth!.userId))
+    .map((r) => getFullUserProfile(r.from_user_id, meId))
     .filter(Boolean);
   res.json({ locked: false, count: rows.length, profiles });
 });
@@ -599,8 +666,19 @@ app.get('/api/likes/received', requireAuth, (req: AuthenticatedRequest, res) => 
 app.post('/api/likes/:targetId', requireAuth, (req: AuthenticatedRequest, res) => {
   const meId = req.auth!.userId;
   const targetId = Number(req.params.targetId);
+  const isSuper = Boolean(req.body?.is_super);
   if (!targetId || targetId === meId) {
     res.status(400).json({ error: 'Profil cible invalide.' });
+    return;
+  }
+
+  const isBlocked = db
+    .prepare(
+      'SELECT 1 FROM blocked_users WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)'
+    )
+    .get(meId, targetId, targetId, meId);
+  if (isBlocked) {
+    res.status(403).json({ error: 'Action impossible : ce profil est bloqué.' });
     return;
   }
 
@@ -611,18 +689,46 @@ app.post('/api/likes/:targetId', requireAuth, (req: AuthenticatedRequest, res) =
   }
 
   const existingLike = db
-    .prepare('SELECT id FROM likes WHERE from_user_id = ? AND to_user_id = ?')
-    .get(meId, targetId);
+    .prepare('SELECT id, is_super FROM likes WHERE from_user_id = ? AND to_user_id = ?')
+    .get(meId, targetId) as { id: number; is_super: number } | undefined;
 
   if (existingLike) {
-    res.json({ liked: true, matched: targetUser.is_match, partner: targetUser });
+    res.json({
+      liked: true,
+      is_super: Boolean(existingLike.is_super),
+      matched: targetUser.is_match,
+      partner: targetUser,
+    });
     return;
   }
 
   const meUser = getFullUserProfile(meId, meId)!;
 
+  if (isSuper) {
+    const usedToday = (
+      db
+        .prepare(
+          "SELECT COUNT(*) as c FROM likes WHERE from_user_id = ? AND is_super = 1 AND date(created_at) = date('now')"
+        )
+        .get(meId) as { c: number }
+    ).c;
+    const quota = meUser.is_premium ? 5 : 1;
+    if (usedToday >= quota) {
+      res.status(429).json({
+        error: meUser.is_premium
+          ? 'Quota quotidien de 5 Super-Likes atteint.'
+          : 'Quota de 1 Super-Like gratuit par jour atteint. Passez à Premium pour en envoyer 5/jour.',
+      });
+      return;
+    }
+  }
+
   const result = db.transaction(() => {
-    db.prepare('INSERT INTO likes (from_user_id, to_user_id) VALUES (?, ?)').run(meId, targetId);
+    db.prepare('INSERT INTO likes (from_user_id, to_user_id, is_super) VALUES (?, ?, ?)').run(
+      meId,
+      targetId,
+      isSuper ? 1 : 0
+    );
 
     const mutual = db
       .prepare('SELECT id FROM likes WHERE from_user_id = ? AND to_user_id = ?')
@@ -632,7 +738,15 @@ app.post('/api/likes/:targetId', requireAuth, (req: AuthenticatedRequest, res) =
       if (targetUser.notify_matches) {
         db.prepare(
           'INSERT INTO notifications (user_id, type, title, body, related_user_id) VALUES (?, ?, ?, ?, ?)'
-        ).run(targetId, 'like', 'Nouveau J’aime', `${meUser.first_name} a aimé votre profil.`, meId);
+        ).run(
+          targetId,
+          'like',
+          isSuper ? 'Coup de cœur ZOLA !' : 'Nouveau J’aime',
+          isSuper
+            ? `${meUser.first_name} vous a envoyé un Coup de cœur prioritaire.`
+            : `${meUser.first_name} a aimé votre profil.`,
+          meId
+        );
       }
       return { matched: false, conversationId: null };
     }
@@ -675,6 +789,7 @@ app.post('/api/likes/:targetId', requireAuth, (req: AuthenticatedRequest, res) =
 
   res.json({
     liked: true,
+    is_super: isSuper,
     matched: result.matched,
     conversationId: result.conversationId,
     partner: targetUser,
@@ -687,8 +802,11 @@ app.post('/api/boost', requireAuth, (req: AuthenticatedRequest, res) => {
     res.status(403).json({ error: 'Fonctionnalité réservée aux membres Premium.' });
     return;
   }
+  db.prepare("INSERT INTO profile_boosts (user_id, expires_at) VALUES (?, datetime('now', '+30 minutes'))").run(
+    req.auth!.userId
+  );
   db.prepare("UPDATE users SET last_seen_at = datetime('now') WHERE id = ?").run(req.auth!.userId);
-  res.json({ ok: true, message: 'Votre profil a été remonté en tête des découvertes.' });
+  res.json({ ok: true, message: 'Votre profil est propulsé en tête des découvertes pendant 30 minutes.' });
 });
 
 // ========================
@@ -747,6 +865,130 @@ app.get('/api/users/:id', requireAuth, (req: AuthenticatedRequest, res) => {
   res.json({ profile });
 });
 
+// ========================
+// FAVORITES (SAVED PROFILES)
+// ========================
+app.get('/api/favorites', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
+  const rows = db
+    .prepare(
+      `SELECT f.favorite_user_id, f.created_at as favorited_at
+       FROM favorites f
+       JOIN users u ON u.id = f.favorite_user_id
+       WHERE f.user_id = ?
+         AND u.status = 'active'
+         AND u.profile_visible = 1
+         AND f.favorite_user_id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = ?)
+         AND f.favorite_user_id NOT IN (SELECT blocker_id FROM blocked_users WHERE blocked_id = ?)
+       ORDER BY datetime(f.created_at) DESC`
+    )
+    .all(meId, meId, meId) as Array<{ favorite_user_id: number; favorited_at: string }>;
+
+  const profiles = rows
+    .map((r) => {
+      const p = getFullUserProfile(r.favorite_user_id, meId);
+      return p ? { ...p, favorited_at: r.favorited_at } : null;
+    })
+    .filter(Boolean);
+
+  res.json({ profiles, count: profiles.length });
+});
+
+app.post('/api/favorites/:targetId', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
+  const targetId = Number(req.params.targetId);
+  if (!Number.isInteger(targetId) || targetId <= 0 || targetId === meId) {
+    res.status(400).json({ error: 'Profil cible invalide.' });
+    return;
+  }
+
+  const isBlocked = db
+    .prepare(
+      'SELECT 1 FROM blocked_users WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)'
+    )
+    .get(meId, targetId, targetId, meId);
+  if (isBlocked) {
+    res.status(403).json({ error: 'Ce profil est inaccessible.' });
+    return;
+  }
+
+  const targetUser = db
+    .prepare("SELECT id FROM users WHERE id = ? AND status = 'active'")
+    .get(targetId);
+  if (!targetUser) {
+    res.status(404).json({ error: 'Profil introuvable.' });
+    return;
+  }
+
+  const existing = db
+    .prepare('SELECT 1 FROM favorites WHERE user_id = ? AND favorite_user_id = ?')
+    .get(meId, targetId);
+
+  let isFavorite = false;
+  if (existing) {
+    db.prepare('DELETE FROM favorites WHERE user_id = ? AND favorite_user_id = ?').run(meId, targetId);
+    isFavorite = false;
+  } else {
+    db.prepare('INSERT INTO favorites (user_id, favorite_user_id) VALUES (?, ?)').run(meId, targetId);
+    isFavorite = true;
+  }
+
+  const count = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c
+         FROM favorites f
+         JOIN users u ON u.id = f.favorite_user_id
+         WHERE f.user_id = ?
+           AND u.status = 'active'
+           AND u.profile_visible = 1
+           AND f.favorite_user_id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = ?)
+           AND f.favorite_user_id NOT IN (SELECT blocker_id FROM blocked_users WHERE blocked_id = ?)`
+      )
+      .get(meId, meId, meId) as { c: number }
+  ).c;
+
+  res.json({
+    ok: true,
+    is_favorite: isFavorite,
+    count,
+    message: isFavorite ? 'Profil ajouté à vos favoris !' : 'Profil retiré de vos favoris.',
+  });
+});
+
+app.delete('/api/favorites/:targetId', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
+  const targetId = Number(req.params.targetId);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    res.status(400).json({ error: 'Profil cible invalide.' });
+    return;
+  }
+
+  db.prepare('DELETE FROM favorites WHERE user_id = ? AND favorite_user_id = ?').run(meId, targetId);
+
+  const count = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c
+         FROM favorites f
+         JOIN users u ON u.id = f.favorite_user_id
+         WHERE f.user_id = ?
+           AND u.status = 'active'
+           AND u.profile_visible = 1
+           AND f.favorite_user_id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = ?)
+           AND f.favorite_user_id NOT IN (SELECT blocker_id FROM blocked_users WHERE blocked_id = ?)`
+      )
+      .get(meId, meId, meId) as { c: number }
+  ).c;
+
+  res.json({
+    ok: true,
+    is_favorite: false,
+    count,
+    message: 'Profil retiré de vos favoris.',
+  });
+});
+
 app.post('/api/users/:id/report', requireAuth, (req: AuthenticatedRequest, res) => {
   const targetId = Number(req.params.id);
   const reason = String(req.body?.reason || '').trim();
@@ -761,24 +1003,7 @@ app.post('/api/users/:id/report', requireAuth, (req: AuthenticatedRequest, res) 
   res.json({ ok: true, message: 'Signalement transmis à notre équipe de modération.' });
 });
 
-app.post('/api/users/:id/block', requireAuth, (req: AuthenticatedRequest, res) => {
-  const targetId = Number(req.params.id);
-  if (targetId === req.auth!.userId) {
-    res.status(400).json({ error: 'Action impossible.' });
-    return;
-  }
-  db.prepare('INSERT OR IGNORE INTO blocked_users (blocker_id, blocked_id) VALUES (?, ?)').run(
-    req.auth!.userId,
-    targetId
-  );
-  res.json({ ok: true, message: 'Utilisateur bloqué avec succès.' });
-});
-
-// ========================
-// MESSAGING (TEXT, PHOTO, VOICE AUDIO, REAL-TIME)
-// ========================
-app.get('/api/messages/conversations', requireAuth, (req: AuthenticatedRequest, res) => {
-  const meId = req.auth!.userId;
+function getUserConversations(meId: number) {
   const rows = db
     .prepare(
       `SELECT c.id, c.match_id, cm_other.user_id as partner_id,
@@ -801,7 +1026,7 @@ app.get('/api/messages/conversations', requireAuth, (req: AuthenticatedRequest, 
     )
     .all(meId, meId, meId, meId, meId) as Array<Record<string, unknown>>;
 
-  const conversations = rows.map((r) => ({
+  return rows.map((r) => ({
     id: Number(r.id),
     match_id: Number(r.match_id),
     partner: {
@@ -820,8 +1045,100 @@ app.get('/api/messages/conversations', requireAuth, (req: AuthenticatedRequest, 
     last_message_at: r.last_message_at ? String(r.last_message_at) : null,
     unread_count: Number(r.unread_count || 0),
   }));
+}
 
-  res.json({ conversations });
+app.post('/api/users/:id/block', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
+  const targetId = Number(req.params.id);
+  if (!Number.isInteger(targetId) || targetId <= 0 || targetId === meId) {
+    res.status(400).json({ error: 'Action impossible.' });
+    return;
+  }
+
+  const targetExists = db.prepare('SELECT id FROM users WHERE id = ?').get(targetId);
+  if (!targetExists) {
+    res.status(404).json({ error: 'Profil introuvable.' });
+    return;
+  }
+
+  const cleanupResult = db.transaction(() => {
+    db.prepare('INSERT OR IGNORE INTO blocked_users (blocker_id, blocked_id) VALUES (?, ?)').run(meId, targetId);
+
+    // Supprimer les likes mutuels et éventuels likes en attente entre les deux profils
+    db.prepare(
+      'DELETE FROM likes WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)'
+    ).run(meId, targetId, targetId, meId);
+
+    // Supprimer le match et la conversation privée associée (messages, réactions, membres)
+    const u1 = Math.min(meId, targetId);
+    const u2 = Math.max(meId, targetId);
+    const matchRows = db
+      .prepare('SELECT id FROM matches WHERE user_one_id = ? AND user_two_id = ?')
+      .all(u1, u2) as Array<{ id: number }>;
+
+    let deletedConversations = 0;
+    for (const m of matchRows) {
+      const convRows = db
+        .prepare('SELECT id FROM conversations WHERE match_id = ?')
+        .all(m.id) as Array<{ id: number }>;
+      for (const c of convRows) {
+        db.prepare(
+          'DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)'
+        ).run(c.id);
+        db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(c.id);
+        db.prepare('DELETE FROM conversation_members WHERE conversation_id = ?').run(c.id);
+        db.prepare('DELETE FROM conversations WHERE id = ?').run(c.id);
+        deletedConversations++;
+      }
+    }
+
+    const matchDeleteInfo = db
+      .prepare('DELETE FROM matches WHERE user_one_id = ? AND user_two_id = ?')
+      .run(u1, u2);
+
+    // Nettoyer les notifications liées entre les deux membres
+    db.prepare(
+      'DELETE FROM notifications WHERE (user_id = ? AND related_user_id = ?) OR (user_id = ? AND related_user_id = ?)'
+    ).run(meId, targetId, targetId, meId);
+
+    // Retirer des favoris dans les deux sens
+    db.prepare(
+      'DELETE FROM favorites WHERE (user_id = ? AND favorite_user_id = ?) OR (user_id = ? AND favorite_user_id = ?)'
+    ).run(meId, targetId, targetId, meId);
+
+    return {
+      deletedMatches: matchDeleteInfo.changes,
+      deletedConversations,
+    };
+  })();
+
+  const conversations = getUserConversations(meId);
+
+  broadcastToUser(targetId, 'user:blocked', {
+    blockedByUserId: meId,
+    blockedUserId: targetId,
+  });
+  broadcastToUser(meId, 'user:blocked', {
+    blockedByUserId: meId,
+    blockedUserId: targetId,
+  });
+
+  res.json({
+    ok: true,
+    message: 'Utilisateur bloqué. Vos matchs et conversations avec ce profil ont été supprimés.',
+    blocked_user_id: targetId,
+    deleted_matches: cleanupResult.deletedMatches,
+    deleted_conversations: cleanupResult.deletedConversations,
+    conversations,
+  });
+});
+
+// ========================
+// MESSAGING (TEXT, PHOTO, VOICE AUDIO, REAL-TIME)
+// ========================
+app.get('/api/messages/conversations', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
+  res.json({ conversations: getUserConversations(meId) });
 });
 
 app.get('/api/messages/conversations/:convId', requireAuth, (req: AuthenticatedRequest, res) => {
@@ -839,6 +1156,18 @@ app.get('/api/messages/conversations/:convId', requireAuth, (req: AuthenticatedR
     .prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?')
     .get(convId, meId) as { user_id: number } | undefined;
 
+  if (otherMember) {
+    const blocked = db
+      .prepare(
+        'SELECT 1 FROM blocked_users WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)'
+      )
+      .get(meId, otherMember.user_id, otherMember.user_id, meId);
+    if (blocked) {
+      res.status(403).json({ error: 'Cette conversation est inaccessible.' });
+      return;
+    }
+  }
+
   db.prepare('UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ? AND is_read = 0').run(
     convId,
     meId
@@ -852,6 +1181,24 @@ app.get('/api/messages/conversations/:convId', requireAuth, (req: AuthenticatedR
     .prepare('SELECT id, conversation_id, sender_id, content, image_url, audio_url, is_read, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC')
     .all(convId) as Array<Record<string, unknown>>;
 
+  const reactionRows = db
+    .prepare(
+      `SELECT mr.message_id, mr.emoji, COUNT(*) as cnt,
+              MAX(CASE WHEN mr.user_id = ? THEN 1 ELSE 0 END) as reacted_by_me
+       FROM message_reactions mr
+       JOIN messages m ON m.id = mr.message_id
+       WHERE m.conversation_id = ?
+       GROUP BY mr.message_id, mr.emoji`
+    )
+    .all(meId, convId) as Array<{ message_id: number; emoji: string; cnt: number; reacted_by_me: number }>;
+
+  const reactionsByMsg = new Map<number, Array<{ emoji: string; count: number; reacted_by_me: boolean }>>();
+  for (const r of reactionRows) {
+    const arr = reactionsByMsg.get(r.message_id) || [];
+    arr.push({ emoji: r.emoji, count: r.cnt, reacted_by_me: Boolean(r.reacted_by_me) });
+    reactionsByMsg.set(r.message_id, arr);
+  }
+
   res.json({
     messages: messages.map((m) => ({
       id: Number(m.id),
@@ -862,8 +1209,84 @@ app.get('/api/messages/conversations/:convId', requireAuth, (req: AuthenticatedR
       audio_url: m.audio_url ? String(m.audio_url) : null,
       is_read: Boolean(m.is_read),
       created_at: String(m.created_at),
+      reactions: reactionsByMsg.get(Number(m.id)) || [],
     })),
   });
+});
+
+app.get('/api/rtc/config', requireAuth, (_req, res) => {
+  const iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
+    { urls: 'stun:stun.l.google.com:19302' },
+  ];
+  if (process.env.TURN_URL) {
+    iceServers.push({
+      urls: process.env.TURN_URL,
+      username: process.env.TURN_USERNAME || undefined,
+      credential: process.env.TURN_CREDENTIAL || undefined,
+    });
+  }
+  res.json({ iceServers });
+});
+
+app.post('/api/messages/:messageId/react', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
+  const msgId = Number(req.params.messageId);
+  const emoji = String(req.body?.emoji || '').trim();
+  const allowedEmojis = ['❤️', '😊', '🔥', '😂', '👏', '🙏'];
+  if (!allowedEmojis.includes(emoji)) {
+    res.status(400).json({ error: 'Réaction non autorisée.' });
+    return;
+  }
+
+  const msg = db.prepare('SELECT id, conversation_id FROM messages WHERE id = ?').get(msgId) as
+    | { id: number; conversation_id: number }
+    | undefined;
+  if (!msg) {
+    res.status(404).json({ error: 'Message introuvable.' });
+    return;
+  }
+  const isMember = db
+    .prepare('SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?')
+    .get(msg.conversation_id, meId);
+  if (!isMember) {
+    res.status(403).json({ error: 'Accès refusé.' });
+    return;
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
+    .get(msgId, meId, emoji) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare('DELETE FROM message_reactions WHERE id = ?').run(existing.id);
+  } else {
+    db.prepare('INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)').run(msgId, meId, emoji);
+  }
+
+  const updated = db
+    .prepare(
+      `SELECT emoji, COUNT(*) as cnt, MAX(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as reacted_by_me
+       FROM message_reactions WHERE message_id = ? GROUP BY emoji`
+    )
+    .all(meId, msgId) as Array<{ emoji: string; cnt: number; reacted_by_me: number }>;
+
+  const reactions = updated.map((r) => ({
+    emoji: r.emoji,
+    count: r.cnt,
+    reacted_by_me: Boolean(r.reacted_by_me),
+  }));
+
+  const otherMember = db
+    .prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?')
+    .get(msg.conversation_id, meId) as { user_id: number } | undefined;
+  if (otherMember) {
+    broadcastToUser(otherMember.user_id, 'message:reaction', {
+      conversationId: msg.conversation_id,
+      messageId: msgId,
+    });
+  }
+
+  res.json({ ok: true, reactions });
 });
 
 app.post(
@@ -913,6 +1336,25 @@ app.post(
       return;
     }
 
+    // Anti-spam & suspicious link guard
+    if (content) {
+      const recentDuplicate = db
+        .prepare(
+          "SELECT COUNT(*) as c FROM messages WHERE sender_id = ? AND content = ? AND datetime(created_at) > datetime('now', '-2 minutes')"
+        )
+        .get(meId, content) as { c: number };
+      if (recentDuplicate.c >= 3) {
+        res.status(429).json({ error: 'Envoi trop rapide de messages identiques détecté (protection anti-spam).' });
+        return;
+      }
+      if (/(bit\.ly|tinyurl\.com|t\.me\/|wa\.me\/|whatsapp\.com)/i.test(content)) {
+        res.status(400).json({
+          error: 'Par sécurité, les liens raccourcis ou redirections externes ne sont pas autorisés dans les discussions.',
+        });
+        return;
+      }
+    }
+
     const otherMember = db
       .prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?')
       .get(convId, meId) as { user_id: number } | undefined;
@@ -946,6 +1388,7 @@ app.post(
       audio_url: inserted.audio_url ? String(inserted.audio_url) : null,
       is_read: Boolean(inserted.is_read),
       created_at: String(inserted.created_at),
+      reactions: [],
     };
 
     if (otherMember) {
@@ -976,6 +1419,7 @@ app.post(
 // NOTIFICATIONS
 // ========================
 app.get('/api/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
+  const meId = req.auth!.userId;
   const rows = db
     .prepare(
       `SELECT n.id, n.type, n.title, n.body, n.related_user_id, n.is_read, n.created_at,
@@ -983,10 +1427,14 @@ app.get('/api/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
        FROM notifications n
        LEFT JOIN user_profiles p ON p.user_id = n.related_user_id
        WHERE n.user_id = ?
+         AND (n.related_user_id IS NULL OR (
+           n.related_user_id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = ?)
+           AND n.related_user_id NOT IN (SELECT blocker_id FROM blocked_users WHERE blocked_id = ?)
+         ))
        ORDER BY n.id DESC
        LIMIT 50`
     )
-    .all(req.auth!.userId) as Array<Record<string, unknown>>;
+    .all(meId, meId, meId) as Array<Record<string, unknown>>;
 
   res.json({
     notifications: rows.map((r) => ({
@@ -1162,6 +1610,69 @@ app.delete('/api/settings/account', requireAuth, (req: AuthenticatedRequest, res
   res.json({ ok: true });
 });
 
+app.get('/api/settings/sessions', requireAuth, (req: AuthenticatedRequest, res) => {
+  const rows = db
+    .prepare(
+      'SELECT session_id, user_agent, ip_address, last_active_at, created_at FROM user_sessions WHERE user_id = ? AND revoked = 0 ORDER BY datetime(last_active_at) DESC'
+    )
+    .all(req.auth!.userId) as Array<{
+    session_id: string;
+    user_agent: string;
+    ip_address: string;
+    last_active_at: string;
+    created_at: string;
+  }>;
+
+  res.json({
+    sessions: rows.map((r) => ({
+      ...r,
+      is_current: r.session_id === req.auth!.sessionId,
+    })),
+  });
+});
+
+app.delete('/api/settings/sessions/:sessionId', requireAuth, (req: AuthenticatedRequest, res) => {
+  const sid = String(req.params.sessionId || '');
+  db.prepare('UPDATE user_sessions SET revoked = 1 WHERE session_id = ? AND user_id = ?').run(sid, req.auth!.userId);
+  res.json({ ok: true });
+});
+
+app.post('/api/settings/2fa/setup', requireAuth, (req: AuthenticatedRequest, res) => {
+  const user = db.prepare('SELECT email FROM users WHERE id = ?').get(req.auth!.userId) as { email: string };
+  const secret = generateTotpSecret();
+  db.prepare('UPDATE users SET two_factor_secret = ? WHERE id = ?').run(secret, req.auth!.userId);
+  res.json({
+    secret,
+    otpauth_uri: buildOtpAuthUri(user.email, secret),
+  });
+});
+
+app.post('/api/settings/2fa/enable', requireAuth, (req: AuthenticatedRequest, res) => {
+  const code = String(req.body?.code || '');
+  const row = db.prepare('SELECT two_factor_secret FROM users WHERE id = ?').get(req.auth!.userId) as {
+    two_factor_secret: string | null;
+  };
+  if (!row?.two_factor_secret || !verifyTotpCode(row.two_factor_secret, code)) {
+    res.status(400).json({ error: 'Code TOTP invalide. Vérifiez l’heure de votre application d’authentification.' });
+    return;
+  }
+  db.prepare('UPDATE users SET two_factor_enabled = 1 WHERE id = ?').run(req.auth!.userId);
+  res.json({ ok: true, user: getFullUserProfile(req.auth!.userId, req.auth!.userId) });
+});
+
+app.post('/api/settings/2fa/disable', requireAuth, (req: AuthenticatedRequest, res) => {
+  const code = String(req.body?.code || '');
+  const row = db.prepare('SELECT two_factor_secret FROM users WHERE id = ?').get(req.auth!.userId) as {
+    two_factor_secret: string | null;
+  };
+  if (row?.two_factor_secret && !verifyTotpCode(row.two_factor_secret, code)) {
+    res.status(400).json({ error: 'Code 2FA invalide pour désactiver.' });
+    return;
+  }
+  db.prepare('UPDATE users SET two_factor_enabled = 0, two_factor_secret = NULL WHERE id = ?').run(req.auth!.userId);
+  res.json({ ok: true, user: getFullUserProfile(req.auth!.userId, req.auth!.userId) });
+});
+
 // ========================
 // PREMIUM, GATEWAY WEBHOOK & RECEIPTS
 // ========================
@@ -1192,7 +1703,7 @@ app.get('/api/premium/status', requireAuth, (req: AuthenticatedRequest, res) => 
 
   const payments = db
     .prepare(
-      `SELECT p.id, p.user_id, sp.name as plan_name, p.amount_fcfa, p.currency, p.provider, p.reference, p.status, p.created_at, p.verified_at
+      `SELECT p.id, p.user_id, sp.name as plan_name, p.amount_fcfa, p.currency, p.provider, p.gateway, p.reference, p.status, p.checkout_url, p.created_at, p.verified_at
        FROM payments p
        JOIN subscription_plans sp ON sp.id = p.plan_id
        WHERE p.user_id = ?
@@ -1209,14 +1720,16 @@ app.get('/api/premium/status', requireAuth, (req: AuthenticatedRequest, res) => 
     })),
     active_subscription: activeSub || null,
     payments,
+    saspay_configured: Boolean(SASPAY_SECRET_KEY),
+    saspay_mode: SASPAY_SECRET_KEY.startsWith('sk_live_') ? 'live' : 'sandbox',
   });
 });
 
-app.post('/api/premium/checkout', requireAuth, (req: AuthenticatedRequest, res) => {
+app.post('/api/premium/checkout', requireAuth, async (req: AuthenticatedRequest, res) => {
   const meId = req.auth!.userId;
   const planId = Number(req.body?.plan_id);
-  const provider = String(req.body?.provider || 'CinetPay · Orange Money');
-  const gateway = String(req.body?.gateway || 'cinetpay');
+  const provider = 'SasPay · Mobile Money & Carte';
+  const gateway = 'saspay';
   const plan = db
     .prepare('SELECT id, name, duration_months, price_fcfa FROM subscription_plans WHERE id = ? AND active = 1')
     .get(planId) as { id: number; name: string; duration_months: number; price_fcfa: number } | undefined;
@@ -1226,24 +1739,86 @@ app.post('/api/premium/checkout', requireAuth, (req: AuthenticatedRequest, res) 
     return;
   }
 
+  const payer = db
+    .prepare(
+      `SELECT u.email, COALESCE(up.full_name, u.email) as full_name
+       FROM users u
+       LEFT JOIN user_profiles up ON up.user_id = u.id
+       WHERE u.id = ?`
+    )
+    .get(meId) as { email: string; full_name: string } | undefined;
+
   const reference = `ZOLA-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+  const amountDecimal = plan.price_fcfa.toFixed(2);
   const signature = crypto
     .createHmac('sha256', PAYMENT_SECRET)
     .update(`${reference}:${meId}:${plan.id}:${plan.price_fcfa}`)
     .digest('hex');
 
+  let sasSessionId: string | null = null;
+  let checkoutUrl: string | null = null;
+
+  if (SASPAY_SECRET_KEY) {
+    const envAppUrl = process.env.APP_URL && process.env.APP_URL !== 'MY_APP_URL' ? process.env.APP_URL.replace(/\/+$/, '') : '';
+    const appOrigin = envAppUrl || `${req.protocol}://${req.get('host')}`;
+    try {
+      const sasRes = await fetch(`${SASPAY_BASE_URL}/checkout-sessions/`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${SASPAY_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: amountDecimal,
+          currency: 'XOF',
+          description: `Abonnement ZOLA Premium - ${plan.name}`,
+          reference,
+          customer_email: payer?.email || '',
+          customer_name: payer?.full_name || 'Membre ZOLA',
+          return_url: `${appOrigin}/?saspay_ref=${encodeURIComponent(reference)}`,
+        }),
+      });
+      const sasBodyText = await sasRes.text();
+      let sasData: Record<string, unknown> = {};
+      try {
+        sasData = JSON.parse(sasBodyText) as Record<string, unknown>;
+      } catch {
+        sasData = {};
+      }
+      if (!sasRes.ok) {
+        const errMsg =
+          String(sasData.detail || sasData.message || sasData.error || '') ||
+          `Erreur SasPay (${sasRes.status})`;
+        res.status(502).json({ error: `Passerelle SasPay indisponible : ${errMsg}` });
+        return;
+      }
+      const nested = (sasData.data as Record<string, unknown> | undefined) || {};
+      sasSessionId = String(sasData.id || sasData.session_id || nested.id || nested.session_id || '') || null;
+      checkoutUrl = String(sasData.checkout_url || sasData.url || nested.checkout_url || nested.url || '') || null;
+    } catch {
+      res.status(502).json({ error: 'Impossible de contacter la passerelle SasPay pour le moment.' });
+      return;
+    }
+  }
+
   db.prepare(
-    `INSERT INTO payments (user_id, plan_id, amount_fcfa, currency, provider, gateway, reference, verification_hmac, status)
-     VALUES (?, ?, ?, 'XOF', ?, ?, ?, ?, 'pending')`
-  ).run(meId, plan.id, plan.price_fcfa, provider, gateway, reference, signature);
+    `INSERT INTO payments (user_id, plan_id, amount_fcfa, currency, provider, gateway, reference, verification_hmac, saspay_session_id, checkout_url, status)
+     VALUES (?, ?, ?, 'XOF', ?, ?, ?, ?, ?, ?, 'pending')`
+  ).run(meId, plan.id, plan.price_fcfa, provider, gateway, reference, signature, sasSessionId, checkoutUrl);
 
   res.status(201).json({
     payment_intent: {
       reference,
       amount_fcfa: plan.price_fcfa,
+      amount_decimal: amountDecimal,
+      currency: 'XOF',
       plan_name: plan.name,
       provider,
       gateway,
+      session_id: sasSessionId,
+      checkout_url: checkoutUrl,
+      saspay_configured: Boolean(SASPAY_SECRET_KEY),
+      saspay_mode: SASPAY_SECRET_KEY.startsWith('sk_live_') ? 'live' : 'sandbox',
       verification_token: signature,
     },
   });
@@ -1285,13 +1860,14 @@ function finalizeVerifiedPayment(reference: string, userId: number, payloadJson?
   })();
 }
 
-app.post('/api/premium/verify', requireAuth, (req: AuthenticatedRequest, res) => {
+app.post('/api/premium/verify', requireAuth, async (req: AuthenticatedRequest, res) => {
   const meId = req.auth!.userId;
-  const { reference, verification_token } = req.body ?? {};
+  const reference = String(req.body?.reference || '');
+  const verificationToken = String(req.body?.verification_token || '');
   const payment = db
-    .prepare('SELECT id, plan_id, amount_fcfa, status FROM payments WHERE reference = ? AND user_id = ?')
-    .get(String(reference || ''), meId) as
-    | { id: number; plan_id: number; amount_fcfa: number; status: string }
+    .prepare('SELECT id, plan_id, amount_fcfa, status, saspay_session_id FROM payments WHERE reference = ? AND user_id = ?')
+    .get(reference, meId) as
+    | { id: number; plan_id: number; amount_fcfa: number; status: string; saspay_session_id: string | null }
     | undefined;
 
   if (!payment) {
@@ -1303,47 +1879,124 @@ app.post('/api/premium/verify', requireAuth, (req: AuthenticatedRequest, res) =>
     return;
   }
 
+  if (payment.saspay_session_id && SASPAY_SECRET_KEY) {
+    try {
+      const sasRes = await fetch(
+        `${SASPAY_BASE_URL}/checkout-sessions/${encodeURIComponent(payment.saspay_session_id)}/status/`,
+        {
+          headers: { Authorization: `Bearer ${SASPAY_SECRET_KEY}` },
+        }
+      );
+      const statusText = await sasRes.text();
+      let statusData: Record<string, unknown> = {};
+      try {
+        statusData = JSON.parse(statusText) as Record<string, unknown>;
+      } catch {
+        statusData = {};
+      }
+      if (!sasRes.ok) {
+        res.status(502).json({ error: `Impossible de vérifier le statut SasPay (${sasRes.status}).` });
+        return;
+      }
+      const nested = (statusData.data as Record<string, unknown> | undefined) || {};
+      const sasStatus = String(statusData.status || nested.status || '').toLowerCase();
+      if (['completed', 'success', 'succeeded', 'paid'].includes(sasStatus)) {
+        finalizeVerifiedPayment(reference, meId, statusText);
+        res.json({ ok: true, user: getFullUserProfile(meId, meId) });
+        return;
+      }
+      if (['failed', 'cancelled', 'expired'].includes(sasStatus)) {
+        db.prepare("UPDATE payments SET status = 'failed', webhook_payload = ? WHERE id = ?").run(statusText, payment.id);
+        res.status(402).json({ error: 'Paiement SasPay annulé ou échoué.' });
+        return;
+      }
+      res.status(402).json({ error: 'Paiement SasPay toujours en attente de confirmation.' });
+      return;
+    } catch {
+      res.status(502).json({ error: 'Erreur de communication lors de la vérification SasPay.' });
+      return;
+    }
+  }
+
   const expected = crypto
     .createHmac('sha256', PAYMENT_SECRET)
     .update(`${reference}:${meId}:${payment.plan_id}:${payment.amount_fcfa}`)
     .digest('hex');
 
-  const providedBuf = Buffer.from(String(verification_token || ''));
+  const providedBuf = Buffer.from(verificationToken);
   const expectedBuf = Buffer.from(expected);
   if (providedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(providedBuf, expectedBuf)) {
     db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(payment.id);
-    res.status(403).json({ error: 'Signature de paiement invalide. Abonnement non activé.' });
+    res.status(403).json({ error: 'Signature de paiement SasPay invalide. Abonnement non activé.' });
     return;
   }
 
-  finalizeVerifiedPayment(String(reference), meId);
+  finalizeVerifiedPayment(reference, meId);
   res.json({ ok: true, user: getFullUserProfile(meId, meId) });
 });
 
 app.post('/api/premium/webhook/:gateway', (req, res) => {
-  const sigHeader = String(req.headers['x-zola-signature'] || '');
-  const reference = String(req.body?.reference || '');
+  const gateway = String(req.params.gateway || '').toLowerCase();
+  if (gateway !== 'saspay') {
+    res.status(400).json({ error: 'Seule la passerelle SasPay est supportée.' });
+    return;
+  }
+
+  const tsHeader = String(req.headers['x-webhook-timestamp'] || '').trim();
+  const sigHeader = String(req.headers['x-webhook-signature'] || '').trim().toLowerCase();
+  const eventHeader = String(req.headers['x-webhook-event'] || req.body?.event || '').trim().toLowerCase();
+
+  const tsNum = Number(tsHeader);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!tsHeader || !Number.isFinite(tsNum) || Math.abs(nowSec - tsNum) > 300) {
+    res.status(403).json({ error: 'Timestamp webhook SasPay manquant ou expiré.' });
+    return;
+  }
+
+  const rawBody = (req as express.Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body ?? {});
+  const expected = crypto
+    .createHmac('sha256', SASPAY_WEBHOOK_SECRET)
+    .update(`${tsHeader}.${rawBody}`)
+    .digest('hex')
+    .toLowerCase();
+
+  const sigBuf = Buffer.from(sigHeader, 'utf8');
+  const expBuf = Buffer.from(expected, 'utf8');
+  if (!sigHeader || sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    res.status(403).json({ error: 'Signature webhook SasPay invalide.' });
+    return;
+  }
+
+  const bodyData = (req.body?.data as Record<string, unknown> | undefined) || {};
+  const reference = String(req.body?.reference || bodyData.reference || '');
   const payment = db
-    .prepare('SELECT user_id, plan_id, amount_fcfa FROM payments WHERE reference = ?')
-    .get(reference) as { user_id: number; plan_id: number; amount_fcfa: number } | undefined;
+    .prepare('SELECT id, user_id, status FROM payments WHERE reference = ?')
+    .get(reference) as { id: number; user_id: number; status: string } | undefined;
 
   if (!payment) {
-    res.status(404).json({ error: 'Référence inconnue.' });
+    res.status(404).json({ error: 'Référence de paiement SasPay inconnue.' });
     return;
   }
 
-  const expected = crypto
-    .createHmac('sha256', PAYMENT_SECRET)
-    .update(`${reference}:${payment.user_id}:${payment.plan_id}:${payment.amount_fcfa}`)
-    .digest('hex');
-
-  if (!sigHeader || sigHeader.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sigHeader), Buffer.from(expected))) {
-    res.status(403).json({ error: 'Signature webhook invalide.' });
+  if (eventHeader === 'transaction.failed' || eventHeader === 'transaction.cancelled') {
+    if (payment.status !== 'completed') {
+      db.prepare("UPDATE payments SET status = 'failed', webhook_payload = ? WHERE id = ?").run(rawBody, payment.id);
+    }
+    res.json({ ok: true, status: 'failed' });
     return;
   }
 
-  finalizeVerifiedPayment(reference, payment.user_id, JSON.stringify(req.body));
-  res.json({ ok: true });
+  const payloadStatus = String(req.body?.status || bodyData.status || '').toLowerCase();
+  if (
+    eventHeader === 'transaction.success' ||
+    ['completed', 'success', 'succeeded', 'paid'].includes(payloadStatus)
+  ) {
+    finalizeVerifiedPayment(reference, payment.user_id, rawBody);
+    res.json({ ok: true, status: 'completed' });
+    return;
+  }
+
+  res.json({ ok: true, status: 'ignored' });
 });
 
 app.get('/api/premium/receipt/:reference', requireAuth, (req: AuthenticatedRequest, res) => {
@@ -1368,26 +2021,36 @@ app.get('/api/premium/receipt/:reference', requireAuth, (req: AuthenticatedReque
 });
 
 // ========================
-// ADMIN DASHBOARD (RBAC + VERIFICATIONS)
+// ADMIN DASHBOARD (RBAC + VERIFICATIONS + ANALYTICS + AUDIT)
 // ========================
+function recordAuditLog(adminId: number, action: string, targetType: string, targetId: string | number, details = '') {
+  db.prepare(
+    'INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)'
+  ).run(adminId, action, targetType, String(targetId), details);
+}
+
 app.get('/api/admin/overview', requireAdmin, (req, res) => {
   const page = Math.max(1, Number(req.query.page || 1));
   const limit = 25;
   const offset = (page - 1) * limit;
 
+  const totalUsers = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;
+  const activeSubs = (
+    db.prepare("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'active' AND datetime(expires_at) > datetime('now')").get() as { c: number }
+  ).c;
+
   const stats = {
-    total_users: (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c,
+    total_users: totalUsers,
     active_users: (db.prepare("SELECT COUNT(*) as c FROM users WHERE status = 'active'").get() as { c: number }).c,
     verified_users: (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_verified = 1').get() as { c: number }).c,
     online_users: (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_online = 1').get() as { c: number }).c,
     total_matches: (db.prepare('SELECT COUNT(*) as c FROM matches').get() as { c: number }).c,
     total_messages: (db.prepare('SELECT COUNT(*) as c FROM messages').get() as { c: number }).c,
-    active_subscriptions: (
-      db.prepare("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'active' AND datetime(expires_at) > datetime('now')").get() as { c: number }
-    ).c,
+    active_subscriptions: activeSubs,
     total_revenue_fcfa: (
       db.prepare("SELECT COALESCE(SUM(amount_fcfa), 0) as s FROM payments WHERE status = 'completed'").get() as { s: number }
     ).s,
+    conversion_rate: totalUsers > 0 ? Math.round((activeSubs / totalUsers) * 1000) / 10 : 0,
     pending_reports: (db.prepare("SELECT COUNT(*) as c FROM reports WHERE status = 'pending'").get() as { c: number }).c,
     pending_verifications: (
       db.prepare("SELECT COUNT(*) as c FROM verification_requests WHERE status = 'pending'").get() as { c: number }
@@ -1450,8 +2113,75 @@ app.get('/api/admin/overview', requireAdmin, (req, res) => {
   const settings: Record<string, string> = {};
   for (const r of settingsRows) settings[r.setting_key] = r.setting_value;
 
+  const rawMonthly = db
+    .prepare(
+      `SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count
+       FROM users
+       GROUP BY strftime('%Y-%m', created_at)
+       ORDER BY month ASC`
+    )
+    .all() as Array<{ month: string; count: number }>;
+
+  const rawMonthlyRevenue = db
+    .prepare(
+      `SELECT strftime('%Y-%m', COALESCE(verified_at, created_at)) as month, COALESCE(SUM(amount_fcfa), 0) as rev
+       FROM payments
+       WHERE status = 'completed'
+       GROUP BY strftime('%Y-%m', COALESCE(verified_at, created_at))`
+    )
+    .all() as Array<{ month: string; rev: number }>;
+
+  const monthCountMap = new Map<string, number>();
+  for (const row of rawMonthly) {
+    if (row.month) monthCountMap.set(row.month, row.count);
+  }
+  const monthRevMap = new Map<string, number>();
+  for (const row of rawMonthlyRevenue) {
+    if (row.month) monthRevMap.set(row.month, row.rev);
+  }
+
+  const monthsWindow = Number(req.query.months) === 12 ? 12 : 6;
+  const monthNamesFr = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];
+  const monthlySignups: Array<{ month: string; label: string; count: number; revenue_fcfa: number }> = [];
+  const now = new Date();
+  for (let i = monthsWindow - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const label = `${monthNamesFr[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(-2)}`;
+    monthlySignups.push({
+      month: ym,
+      label,
+      count: monthCountMap.get(ym) ?? 0,
+      revenue_fcfa: monthRevMap.get(ym) ?? 0,
+    });
+  }
+
+  const countryDistribution = db
+    .prepare(
+      `SELECT p.country, COUNT(*) as count
+       FROM user_profiles p
+       JOIN users u ON u.id = p.user_id
+       GROUP BY p.country
+       ORDER BY count DESC
+       LIMIT 8`
+    )
+    .all() as Array<{ country: string; count: number }>;
+
+  const auditLogs = db
+    .prepare(
+      `SELECT a.id, up.full_name as admin_name, a.action, a.target_type, a.target_id, a.details, a.created_at
+       FROM admin_audit_logs a
+       JOIN user_profiles up ON up.user_id = a.admin_id
+       ORDER BY a.id DESC
+       LIMIT 60`
+    )
+    .all();
+
   res.json({
     stats,
+    monthly_signups: monthlySignups,
+    country_distribution: countryDistribution,
+    audit_logs: auditLogs,
     users: usersRows,
     reports,
     verifications,
@@ -1464,6 +2194,54 @@ app.get('/api/admin/overview', requireAdmin, (req, res) => {
     })),
     settings,
   });
+});
+
+app.get('/api/admin/export/:type', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const type = String(req.params.type || 'users');
+  const csvEscape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  let headers: string[] = [];
+  let rows: Array<Array<unknown>> = [];
+
+  if (type === 'payments') {
+    headers = ['Reference', 'Membre', 'Formule', 'Montant_FCFA', 'Passerelle', 'Statut', 'Date'];
+    const data = db
+      .prepare(
+        `SELECT p.reference, up.full_name, sp.name, p.amount_fcfa, p.provider, p.status, p.created_at
+         FROM payments p
+         JOIN user_profiles up ON up.user_id = p.user_id
+         JOIN subscription_plans sp ON sp.id = p.plan_id
+         ORDER BY p.id DESC`
+      )
+      .all() as Array<Record<string, unknown>>;
+    rows = data.map((r) => [r.reference, r.full_name, r.name, r.amount_fcfa, r.provider, r.status, r.created_at]);
+  } else if (type === 'reports') {
+    headers = ['ID', 'Signalant', 'Signale', 'Motif', 'Statut', 'Date'];
+    const data = db
+      .prepare(
+        `SELECT r.id, pr.full_name as reporter, pd.full_name as reported, r.reason, r.status, r.created_at
+         FROM reports r
+         JOIN user_profiles pr ON pr.user_id = r.reporter_id
+         JOIN user_profiles pd ON pd.user_id = r.reported_user_id
+         ORDER BY r.id DESC`
+      )
+      .all() as Array<Record<string, unknown>>;
+    rows = data.map((r) => [r.id, r.reporter, r.reported, r.reason, r.status, r.created_at]);
+  } else {
+    headers = ['ID', 'Nom', 'Email', 'Role', 'Statut', 'Verifie', 'Pays', 'Ville', 'Inscription'];
+    const data = db
+      .prepare(
+        `SELECT u.id, p.full_name, u.email, u.role, u.status, u.is_verified, p.country, p.city, u.created_at
+         FROM users u JOIN user_profiles p ON p.user_id = u.id ORDER BY u.id DESC`
+      )
+      .all() as Array<Record<string, unknown>>;
+    rows = data.map((r) => [r.id, r.full_name, r.email, r.role, r.status, r.is_verified, r.country, r.city, r.created_at]);
+  }
+
+  recordAuditLog(req.auth!.userId, 'export_csv', type, type, `Export CSV (${rows.length} lignes)`);
+  const csv = [headers.map(csvEscape).join(','), ...rows.map((r) => r.map(csvEscape).join(','))].join('\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="zola-${type}.csv"`);
+  res.send('\uFEFF' + csv);
 });
 
 app.get('/api/admin/verifications/:id/photo', requireAdmin, (req, res) => {
@@ -1519,6 +2297,7 @@ app.patch('/api/admin/verifications/:id', requireAdmin, (req: AuthenticatedReque
         admin_note ? `Motif : ${admin_note}` : 'Veuillez soumettre un selfie plus lisible avec le code demandé.'
       );
     }
+    recordAuditLog(req.auth!.userId, `verification_${status}`, 'verification', verifId, `Membre #${row.user_id}`);
   })();
 
   res.json({ ok: true });
@@ -1533,12 +2312,15 @@ app.patch('/api/admin/users/:id', requireAdmin, (req: AuthenticatedRequest, res)
   }
   if (status && ['active', 'suspended'].includes(status)) {
     db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, targetId);
+    recordAuditLog(req.auth!.userId, `user_status_${status}`, 'user', targetId);
   }
   if (typeof is_verified === 'boolean') {
     db.prepare('UPDATE users SET is_verified = ? WHERE id = ?').run(is_verified ? 1 : 0, targetId);
+    recordAuditLog(req.auth!.userId, is_verified ? 'user_verify' : 'user_unverify', 'user', targetId);
   }
   if (role && ['user', 'moderator', 'admin', 'super_admin'].includes(role) && req.auth!.role === 'super_admin') {
     db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+    recordAuditLog(req.auth!.userId, 'user_role_change', 'user', targetId, `Nouveau rôle: ${role}`);
   }
   res.json({ ok: true });
 });
@@ -1549,6 +2331,7 @@ app.delete('/api/admin/users/:id', requireAdmin, (req: AuthenticatedRequest, res
     res.status(400).json({ error: 'Impossible de supprimer votre propre compte administrateur.' });
     return;
   }
+  recordAuditLog(req.auth!.userId, 'user_delete', 'user', targetId);
   db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
   res.json({ ok: true });
 });
@@ -1576,11 +2359,18 @@ app.patch('/api/admin/reports/:id', requireAdmin, (req: AuthenticatedRequest, re
     if (suspend_reported) {
       db.prepare("UPDATE users SET status = 'suspended' WHERE id = ?").run(report.reported_user_id);
     }
+    recordAuditLog(
+      req.auth!.userId,
+      `report_${status}`,
+      'report',
+      reportId,
+      suspend_reported ? `Suspension membre #${report.reported_user_id}` : ''
+    );
   })();
   res.json({ ok: true });
 });
 
-app.put('/api/admin/plans/:id', requireAdmin, (req, res) => {
+app.put('/api/admin/plans/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
   const planId = Number(req.params.id);
   const { price_fcfa, is_popular, active } = req.body ?? {};
   if (Number(price_fcfa) < 500) {
@@ -1593,10 +2383,11 @@ app.put('/api/admin/plans/:id', requireAdmin, (req, res) => {
     active ? 1 : 0,
     planId
   );
+  recordAuditLog(req.auth!.userId, 'plan_update', 'plan', planId, `Tarif: ${price_fcfa} FCFA`);
   res.json({ ok: true });
 });
 
-app.put('/api/admin/settings', requireAdmin, (req, res) => {
+app.put('/api/admin/settings', requireAdmin, (req: AuthenticatedRequest, res) => {
   const updates = req.body?.settings;
   if (!updates || typeof updates !== 'object') {
     res.status(400).json({ error: 'Paramètres invalides.' });
@@ -1608,6 +2399,7 @@ app.put('/api/admin/settings', requireAdmin, (req, res) => {
   for (const [k, v] of Object.entries(updates)) {
     stmt.run(k, String(v));
   }
+  recordAuditLog(req.auth!.userId, 'settings_update', 'site_settings', 'global');
   res.json({ ok: true });
 });
 

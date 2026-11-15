@@ -33,6 +33,7 @@ $router->get('/', [$home, 'index']);
 $router->get('/login', [$auth, 'showLogin']);
 $router->get('/register', [$auth, 'showRegister']);
 $router->get('/discover', [$discover, 'showPage']);
+$router->get('/favorites', [$profile, 'favoritesPage']);
 $router->get('/messages', [$messages, 'showPage']);
 $router->get('/profile', [$profile, 'showPage']);
 $router->get('/profile/{id}', [$profile, 'showPage']);
@@ -46,24 +47,31 @@ $router->post('/api/auth/login', [$auth, 'login']);
 $router->post('/api/auth/forgot-password', [$auth, 'forgotPassword']);
 $router->post('/api/auth/logout', [$auth, 'logout']);
 
-// Découverte, Likes & Passes
+// Découverte, Likes, Boost & Passes
 $router->get('/api/discover', [$discover, 'index']);
 $router->post('/api/likes/{id}', [$discover, 'like']);
+$router->post('/api/boost', [$discover, 'boost']);
 $router->post('/api/passes/{id}', [$discover, 'pass']);
 $router->post('/api/passes/reset', [$discover, 'resetPasses']);
 
-// Messagerie privée & Audio/Photo
+// Messagerie privée, Réactions & Audio/Photo
 $router->get('/api/messages/conversations', [$messages, 'conversations']);
 $router->get('/api/messages/conversations/{id}', [$messages, 'thread']);
 $router->post('/api/messages/conversations/{id}', [$messages, 'send']);
+$router->post('/api/messages/{id}/react', [$messages, 'react']);
 
-// Profil & Galerie
+// Profil, Galerie, Favoris & Blocage
 $router->post('/api/profile/update', [$profile, 'update']);
 $router->post('/api/profile/photo', [$profile, 'uploadPhoto']);
+$router->get('/api/favorites', [$profile, 'favoritesList']);
+$router->post('/api/favorites/{id}', [$profile, 'toggleFavorite']);
+$router->delete('/api/favorites/{id}', [$profile, 'removeFavorite']);
+$router->post('/api/users/{id}/block', [$profile, 'block']);
 
-// Abonnement Premium & Paiements
+// Abonnement Premium & Paiements SasPay
 $router->post('/api/premium/checkout', [$premium, 'checkout']);
 $router->post('/api/premium/verify', [$premium, 'verify']);
+$router->post('/api/premium/webhook/saspay', [$premium, 'webhookSaspay']);
 
 // Paramètres
 $router->post('/api/settings/preferences', [$settings, 'updatePreferences']);
@@ -72,6 +80,7 @@ $router->post('/api/settings/account/delete', [$settings, 'deleteAccount']);
 
 // Administration RBAC
 $router->get('/api/admin/overview', [$admin, 'overview']);
+$router->get('/api/admin/export/{type}', [$admin, 'exportCsv']);
 $router->post('/api/admin/verifications/{id}', [$admin, 'reviewVerification']);
 
 $router->dispatch($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI']);

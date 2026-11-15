@@ -22,6 +22,8 @@ CREATE TABLE `users` (
   `profile_visible` TINYINT(1) NOT NULL DEFAULT 1,
   `oauth_provider` VARCHAR(32) NULL,
   `oauth_subject` VARCHAR(190) NULL,
+  `two_factor_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `two_factor_secret` VARCHAR(64) NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -85,6 +87,7 @@ CREATE TABLE `likes` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `from_user_id` BIGINT UNSIGNED NOT NULL,
   `to_user_id` BIGINT UNSIGNED NOT NULL,
+  `is_super` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_likes_pair` (`from_user_id`, `to_user_id`),
@@ -191,10 +194,12 @@ CREATE TABLE `payments` (
   `plan_id` INT UNSIGNED NOT NULL,
   `amount_fcfa` INT UNSIGNED NOT NULL,
   `currency` CHAR(3) NOT NULL DEFAULT 'XOF',
-  `provider` VARCHAR(80) NOT NULL,
-  `gateway` VARCHAR(40) NOT NULL DEFAULT 'cinetpay',
+  `provider` VARCHAR(80) NOT NULL DEFAULT 'SasPay (Mobile Money & Carte)',
+  `gateway` VARCHAR(40) NOT NULL DEFAULT 'saspay',
   `reference` VARCHAR(100) NOT NULL,
   `verification_hmac` VARCHAR(128) NOT NULL,
+  `saspay_session_id` VARCHAR(120) NULL,
+  `checkout_url` VARCHAR(500) NULL,
   `webhook_payload` JSON NULL,
   `status` ENUM('pending', 'completed', 'failed') NOT NULL DEFAULT 'pending',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -289,6 +294,69 @@ CREATE TABLE `verification_requests` (
   PRIMARY KEY (`id`),
   KEY `idx_verif_status` (`status`, `created_at`),
   CONSTRAINT `fk_verif_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 22. profile_boosts
+CREATE TABLE `profile_boosts` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_boosts_user_exp` (`user_id`, `expires_at`),
+  CONSTRAINT `fk_boost_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 23. message_reactions
+CREATE TABLE `message_reactions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `message_id` BIGINT UNSIGNED NOT NULL,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `emoji` VARCHAR(16) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_msg_react` (`message_id`, `user_id`, `emoji`),
+  CONSTRAINT `fk_react_msg` FOREIGN KEY (`message_id`) REFERENCES `messages` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_react_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 24. user_sessions
+CREATE TABLE `user_sessions` (
+  `session_id` VARCHAR(96) NOT NULL,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `user_agent` VARCHAR(255) NOT NULL DEFAULT '',
+  `ip_address` VARCHAR(64) NOT NULL DEFAULT '',
+  `revoked` TINYINT(1) NOT NULL DEFAULT 0,
+  `last_active_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`session_id`),
+  KEY `idx_sessions_user` (`user_id`, `revoked`),
+  CONSTRAINT `fk_sess_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 25. admin_audit_logs
+CREATE TABLE `admin_audit_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `admin_id` BIGINT UNSIGNED NOT NULL,
+  `action` VARCHAR(80) NOT NULL,
+  `target_type` VARCHAR(40) NOT NULL,
+  `target_id` VARCHAR(64) NOT NULL,
+  `details` TEXT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_admin` (`admin_id`, `created_at`),
+  CONSTRAINT `fk_audit_admin` FOREIGN KEY (`admin_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 26. favorites
+CREATE TABLE `favorites` (
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `favorite_user_id` BIGINT UNSIGNED NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`, `favorite_user_id`),
+  KEY `idx_favorites_user_created` (`user_id`, `created_at`),
+  CONSTRAINT `fk_fav_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_fav_target` FOREIGN KEY (`favorite_user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Seed initial reference data

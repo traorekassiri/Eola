@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   BadgeCheck,
+  Ban,
+  Bookmark,
   Briefcase,
   Flag,
   Heart,
@@ -10,9 +12,10 @@ import {
   Ruler,
   ShieldAlert,
   Sparkles,
+  Star,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
-import type { UserProfile } from '../types';
+import type { ConversationSummary, UserProfile } from '../types';
 
 interface MemberProfileViewProps {
   memberId: number;
@@ -21,6 +24,8 @@ interface MemberProfileViewProps {
   onEditOwn?: () => void;
   onOpenChat: (conversationId: number) => void;
   onMatched: (partner: UserProfile, conversationId: number) => void;
+  onBlocked?: (blockedUserId: number, conversations?: ConversationSummary[]) => void;
+  onFavoritesChanged?: (count: number) => void;
 }
 
 export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
@@ -30,6 +35,8 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
   onEditOwn,
   onOpenChat,
   onMatched,
+  onBlocked,
+  onFavoritesChanged,
 }) => {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [activePhoto, setActivePhoto] = useState<string>('');
@@ -37,6 +44,8 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState('Profil suspect ou faux');
   const [reportDetails, setReportDetails] = useState('');
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [blocking, setBlocking] = useState(false);
   const [feedback, setFeedback] = useState('');
 
   useEffect(() => {
@@ -49,20 +58,41 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
       .finally(() => setLoading(false));
   }, [memberId]);
 
-  const handleLike = async () => {
+  const handleLike = async (isSuper = false) => {
     if (!profile) return;
-    const res = await apiFetch<{
-      liked: boolean;
-      matched: boolean;
-      conversationId: number | null;
-      partner: UserProfile;
-    }>(`/api/likes/${profile.id}`, { method: 'POST' });
+    try {
+      const res = await apiFetch<{
+        liked: boolean;
+        is_super?: boolean;
+        matched: boolean;
+        conversationId: number | null;
+        partner: UserProfile;
+      }>(`/api/likes/${profile.id}`, {
+        method: 'POST',
+        body: JSON.stringify({ is_super: isSuper }),
+      });
 
-    setProfile((prev) => (prev ? { ...prev, liked_by_me: true, is_match: res.matched } : prev));
-    if (res.matched && res.conversationId) {
-      onMatched(res.partner, res.conversationId);
-    } else {
-      setFeedback(`Vous avez envoyé un J'aime à ${profile.first_name}.`);
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              liked_by_me: true,
+              is_super_liked: Boolean(res.is_super || prev.is_super_liked),
+              is_match: res.matched,
+            }
+          : prev
+      );
+      if (res.matched && res.conversationId) {
+        onMatched(res.partner, res.conversationId);
+      } else {
+        setFeedback(
+          isSuper
+            ? `Coup de cœur prioritaire envoyé à ${profile.first_name} !`
+            : `Vous avez envoyé un J'aime à ${profile.first_name}.`
+        );
+      }
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "Impossible d'envoyer cette réaction.");
     }
   };
 
@@ -93,9 +123,39 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
   };
 
   const handleBlock = async () => {
+    if (!profile || blocking) return;
+    setBlocking(true);
+    try {
+      const res = await apiFetch<{
+        ok: boolean;
+        message: string;
+        blocked_user_id: number;
+        conversations?: ConversationSummary[];
+      }>(`/api/users/${profile.id}/block`, { method: 'POST' });
+      setBlockOpen(false);
+      onBlocked?.(profile.id, res.conversations);
+      onBack();
+    } catch (err) {
+      setBlockOpen(false);
+      setFeedback(err instanceof Error ? err.message : 'Impossible de bloquer ce profil.');
+    } finally {
+      setBlocking(false);
+    }
+  };
+
+  const handleToggleFavorite = async () => {
     if (!profile) return;
-    await apiFetch(`/api/users/${profile.id}/block`, { method: 'POST' });
-    onBack();
+    try {
+      const res = await apiFetch<{ ok: boolean; is_favorite: boolean; count: number; message: string }>(
+        `/api/favorites/${profile.id}`,
+        { method: 'POST' }
+      );
+      setProfile((prev) => (prev ? { ...prev, is_favorite: res.is_favorite } : prev));
+      onFavoritesChanged?.(res.count);
+      setFeedback(res.message);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Impossible de mettre à jour les favoris.');
+    }
   };
 
   if (loading) {
@@ -143,6 +203,19 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
             <div className="absolute top-4 right-4 flex items-center gap-2">
               <button
                 type="button"
+                onClick={handleToggleFavorite}
+                title={profile.is_favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+                aria-label={profile.is_favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+                className={`flex h-10 w-10 items-center justify-center rounded-full backdrop-blur-md transition-colors ${
+                  profile.is_favorite
+                    ? 'bg-amber-400 text-stone-950 shadow-lg'
+                    : 'bg-black/60 text-stone-200 hover:bg-amber-400/90 hover:text-stone-950'
+                }`}
+              >
+                <Bookmark className={`h-4 w-4 ${profile.is_favorite ? 'fill-current' : ''}`} />
+              </button>
+              <button
+                type="button"
                 onClick={() => setReportOpen(true)}
                 title="Signaler"
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-stone-200 backdrop-blur-md hover:bg-black/80"
@@ -151,8 +224,9 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={handleBlock}
-                title="Bloquer"
+                onClick={() => setBlockOpen(true)}
+                title="Bloquer ce profil"
+                aria-label="Bloquer ce profil"
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-red-300 backdrop-blur-md hover:bg-red-900/70"
               >
                 <ShieldAlert className="h-4 w-4" />
@@ -255,27 +329,71 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
               Modifier mon profil
             </button>
           ) : (
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button
-                type="button"
-                onClick={handleStartMessage}
-                className="zola-gradient zola-gradient-hover inline-flex items-center justify-center gap-2 rounded-full py-3 text-sm font-semibold text-white shadow-lg shadow-orange-600/25"
-              >
-                <MessageCircle className="h-4 w-4" />
-                Envoyer un message
-              </button>
-              <button
-                type="button"
-                onClick={handleLike}
-                className={`inline-flex items-center justify-center gap-2 rounded-full border py-3 text-sm font-semibold transition-colors ${
-                  profile.liked_by_me
-                    ? 'border-red-500/40 bg-red-500/15 text-red-300'
-                    : 'border-white/15 bg-white/5 text-white hover:bg-white/10'
-                }`}
-              >
-                <Heart className={`h-4 w-4 ${profile.liked_by_me ? 'fill-red-500 text-red-500' : 'text-red-400'}`} />
-                {profile.liked_by_me ? 'Aimé' : "J'aime"}
-              </button>
+            <div className="space-y-3 pt-2">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleStartMessage}
+                  className="zola-gradient zola-gradient-hover flex-1 min-w-[160px] inline-flex items-center justify-center gap-2 rounded-full py-3 px-4 text-sm font-semibold text-white shadow-lg shadow-orange-600/25"
+                >
+                  <MessageCircle className="h-4 w-4" />
+                  Envoyer un message
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleLike(false)}
+                  className={`inline-flex items-center justify-center gap-2 rounded-full border py-3 px-5 text-sm font-semibold transition-colors ${
+                    profile.liked_by_me
+                      ? 'border-red-500/40 bg-red-500/15 text-red-300'
+                      : 'border-white/15 bg-white/5 text-white hover:bg-white/10'
+                  }`}
+                >
+                  <Heart className={`h-4 w-4 ${profile.liked_by_me ? 'fill-red-500 text-red-500' : 'text-red-400'}`} />
+                  {profile.liked_by_me ? 'Aimé' : "J'aime"}
+                </button>
+                {!profile.liked_by_me && (
+                  <button
+                    type="button"
+                    onClick={() => handleLike(true)}
+                    title="Coup de cœur prioritaire"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-400/15 py-3 px-4 text-sm font-semibold text-amber-300 hover:bg-amber-400 hover:text-stone-950 transition-colors"
+                  >
+                    <Star className="h-4 w-4 fill-current" />
+                    Coup de cœur
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-3 text-xs">
+                <button
+                  type="button"
+                  onClick={handleToggleFavorite}
+                  className={`inline-flex items-center gap-1.5 font-medium transition-colors ${
+                    profile.is_favorite ? 'text-amber-300' : 'text-stone-300 hover:text-amber-300'
+                  }`}
+                >
+                  <Bookmark className={`h-3.5 w-3.5 ${profile.is_favorite ? 'fill-current' : ''}`} />
+                  {profile.is_favorite ? 'Dans mes favoris' : 'Sauvegarder en favori'}
+                </button>
+                <div className="flex items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setReportOpen(true)}
+                    className="inline-flex items-center gap-1.5 text-stone-400 hover:text-stone-200 transition-colors"
+                  >
+                    <Flag className="h-3.5 w-3.5" />
+                    Signaler
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBlockOpen(true)}
+                    className="inline-flex items-center gap-1.5 text-red-400 hover:text-red-300 font-medium transition-colors"
+                  >
+                    <Ban className="h-3.5 w-3.5" />
+                    Bloquer ce profil
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -322,6 +440,43 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {/* Block Confirmation Modal */}
+      {blockOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="zola-card w-full max-w-md rounded-2xl p-6 space-y-4 border border-red-500/30">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-400">
+                <ShieldAlert className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-bold text-white">Bloquer {profile.first_name} ?</h3>
+                <p className="text-xs text-stone-400">Action immédiate et sécurisée</p>
+              </div>
+            </div>
+            <p className="text-sm leading-relaxed text-stone-300">
+              {profile.first_name} ne pourra plus voir votre profil ni vous envoyer de messages. Tout match et toute conversation en cours avec ce profil seront immédiatement supprimés.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={blocking}
+                onClick={() => setBlockOpen(false)}
+                className="rounded-full border border-white/15 px-4 py-2 text-sm text-stone-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={blocking}
+                onClick={handleBlock}
+                className="rounded-full bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+              >
+                {blocking ? 'Blocage...' : 'Confirmer le blocage'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

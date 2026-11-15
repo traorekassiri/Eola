@@ -3,8 +3,10 @@ import {
   BadgeCheck,
   CheckCircle2,
   CreditCard,
+  Download,
   Flag,
   Heart,
+  History,
   MessageSquare,
   Settings,
   ShieldAlert,
@@ -13,8 +15,16 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import {
+  CountryDistributionChart,
+  MonthlyRevenueChart,
+  MonthlySignupsChart,
+} from './MonthlySignupsChart';
 import type {
+  AdminAuditLog,
   AdminStats,
+  CountryDistributionPoint,
+  MonthlySignupPoint,
   PaymentRecord,
   ReportRecord,
   SiteSettings,
@@ -45,8 +55,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   currentUserRole,
   onSettingsUpdated,
 }) => {
-  const [tab, setTab] = useState<'overview' | 'users' | 'verifications' | 'reports' | 'payments' | 'settings'>('overview');
+  const [tab, setTab] = useState<'overview' | 'users' | 'verifications' | 'reports' | 'payments' | 'audit' | 'settings'>('overview');
   const [stats, setStats] = useState<AdminStats | null>(null);
+  const [monthlySignups, setMonthlySignups] = useState<MonthlySignupPoint[]>([]);
+  const [countryDistribution, setCountryDistribution] = useState<CountryDistributionPoint[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
+  const [monthsWindow, setMonthsWindow] = useState<6 | 12>(6);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [verifications, setVerifications] = useState<VerificationRequestRecord[]>([]);
@@ -60,21 +74,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadData = useCallback(async () => {
     const data = await apiFetch<{
       stats: AdminStats;
+      monthly_signups: MonthlySignupPoint[];
+      country_distribution: CountryDistributionPoint[];
+      audit_logs: AdminAuditLog[];
       users: AdminUserRow[];
       reports: ReportRecord[];
       verifications: VerificationRequestRecord[];
       payments: PaymentRecord[];
       plans: SubscriptionPlan[];
       settings: SiteSettings;
-    }>(`/api/admin/overview?page=${page}`);
+    }>(`/api/admin/overview?page=${page}&months=${monthsWindow}`);
     setStats(data.stats);
+    setMonthlySignups(data.monthly_signups || []);
+    setCountryDistribution(data.country_distribution || []);
+    setAuditLogs(data.audit_logs || []);
     setUsers(data.users);
     setReports(data.reports);
     setVerifications(data.verifications);
     setPayments(data.payments);
     setPlans(data.plans);
     setSettings(data.settings);
-  }, [page]);
+  }, [page, monthsWindow]);
 
   useEffect(() => {
     loadData();
@@ -164,6 +184,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             { id: 'verifications', label: `Vérifications (${stats?.pending_verifications || 0})` },
             { id: 'reports', label: `Signalements (${stats?.pending_reports || 0})` },
             { id: 'payments', label: 'Paiements & Tarifs' },
+            { id: 'audit', label: "Journal d'audit" },
             { id: 'settings', label: 'Contenu & Paramètres' },
           ].map((t) => (
             <button
@@ -187,53 +208,92 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       )}
 
       {tab === 'overview' && stats && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="zola-card rounded-2xl p-5">
-            <div className="flex items-center justify-between text-stone-400 text-xs">
-              <span>Membres inscrits</span>
-              <Users className="h-4 w-4 text-orange-400" />
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="zola-card rounded-2xl p-5">
+              <div className="flex items-center justify-between text-stone-400 text-xs">
+                <span>Membres inscrits</span>
+                <Users className="h-4 w-4 text-orange-400" />
+              </div>
+              <p className="mt-2 font-display text-3xl font-extrabold text-white tabular-nums">{stats.total_users}</p>
+              <p className="mt-1 text-xs text-stone-400 tabular-nums">
+                {stats.verified_users} vérifié(s) · {stats.online_users} en ligne
+              </p>
             </div>
-            <p className="mt-2 font-display text-3xl font-extrabold text-white tabular-nums">{stats.total_users}</p>
-            <p className="mt-1 text-xs text-stone-400 tabular-nums">
-              {stats.verified_users} vérifié(s) · {stats.online_users} en ligne
-            </p>
+
+            <div className="zola-card rounded-2xl p-5">
+              <div className="flex items-center justify-between text-stone-400 text-xs">
+                <span>Matchs & Messages</span>
+                <Heart className="h-4 w-4 text-red-400" />
+              </div>
+              <p className="mt-2 font-display text-3xl font-extrabold text-white tabular-nums">{stats.total_matches}</p>
+              <p className="mt-1 text-xs text-stone-400 tabular-nums flex items-center gap-1">
+                <MessageSquare className="h-3 w-3" /> {stats.total_messages} messages échangés
+              </p>
+            </div>
+
+            <div className="zola-card rounded-2xl p-5">
+              <div className="flex items-center justify-between text-stone-400 text-xs">
+                <span>Revenus Premium</span>
+                <CreditCard className="h-4 w-4 text-amber-400" />
+              </div>
+              <p className="mt-2 font-display text-3xl font-extrabold text-amber-300 tabular-nums">
+                {stats.total_revenue_fcfa.toLocaleString('fr-FR')} FCFA
+              </p>
+              <p className="mt-1 text-xs text-stone-400 tabular-nums">
+                {stats.active_subscriptions} actif(s) · Conversion : {stats.conversion_rate}%
+              </p>
+            </div>
+
+            <div className="zola-card rounded-2xl p-5">
+              <div className="flex items-center justify-between text-stone-400 text-xs">
+                <span>Modération en attente</span>
+                <Flag className="h-4 w-4 text-red-400" />
+              </div>
+              <p className="mt-2 font-display text-3xl font-extrabold text-white tabular-nums">
+                {stats.pending_reports + stats.pending_verifications}
+              </p>
+              <p className="mt-1 text-xs text-stone-400 tabular-nums">
+                {stats.pending_reports} signalement(s) · {stats.pending_verifications} vérif(s)
+              </p>
+            </div>
           </div>
 
-          <div className="zola-card rounded-2xl p-5">
-            <div className="flex items-center justify-between text-stone-400 text-xs">
-              <span>Matchs & Messages</span>
-              <Heart className="h-4 w-4 text-red-400" />
-            </div>
-            <p className="mt-2 font-display text-3xl font-extrabold text-white tabular-nums">{stats.total_matches}</p>
-            <p className="mt-1 text-xs text-stone-400 tabular-nums flex items-center gap-1">
-              <MessageSquare className="h-3 w-3" /> {stats.total_messages} messages échangés
-            </p>
+          <MonthlySignupsChart
+            data={monthlySignups}
+            monthsWindow={monthsWindow}
+            onChangeWindow={setMonthsWindow}
+          />
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <MonthlyRevenueChart data={monthlySignups} />
+            <CountryDistributionChart data={countryDistribution} />
           </div>
 
-          <div className="zola-card rounded-2xl p-5">
-            <div className="flex items-center justify-between text-stone-400 text-xs">
-              <span>Revenus Premium</span>
-              <CreditCard className="h-4 w-4 text-amber-400" />
+          <div className="zola-card rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="font-display text-base font-bold text-white">Exports comptables & modération (CSV)</h2>
+              <p className="text-xs text-stone-400">
+                Téléchargez les données brutes formatées UTF-8 pour Excel ou votre suivi comptable.
+              </p>
             </div>
-            <p className="mt-2 font-display text-3xl font-extrabold text-amber-300 tabular-nums">
-              {stats.total_revenue_fcfa.toLocaleString('fr-FR')} FCFA
-            </p>
-            <p className="mt-1 text-xs text-stone-400 tabular-nums">
-              {stats.active_subscriptions} abonnement(s) actif(s)
-            </p>
-          </div>
-
-          <div className="zola-card rounded-2xl p-5">
-            <div className="flex items-center justify-between text-stone-400 text-xs">
-              <span>Modération en attente</span>
-              <Flag className="h-4 w-4 text-red-400" />
+            <div className="flex flex-wrap gap-2">
+              {[
+                { type: 'users', label: 'Exporter Utilisateurs' },
+                { type: 'payments', label: 'Exporter Paiements' },
+                { type: 'reports', label: 'Exporter Signalements' },
+              ].map((exp) => (
+                <a
+                  key={exp.type}
+                  href={`/api/admin/export/${exp.type}`}
+                  download={`zola-${exp.type}.csv`}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10"
+                >
+                  <Download className="h-3.5 w-3.5 text-orange-400" />
+                  {exp.label}
+                </a>
+              ))}
             </div>
-            <p className="mt-2 font-display text-3xl font-extrabold text-white tabular-nums">
-              {stats.pending_reports + stats.pending_verifications}
-            </p>
-            <p className="mt-1 text-xs text-stone-400 tabular-nums">
-              {stats.pending_reports} signalement(s) · {stats.pending_verifications} vérif(s)
-            </p>
           </div>
         </div>
       )}
@@ -548,6 +608,49 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {tab === 'audit' && (
+        <div className="zola-card rounded-2xl p-5 space-y-4">
+          <div className="flex items-center gap-2 text-white font-display font-bold text-lg">
+            <History className="h-5 w-5 text-orange-400" />
+            Journal d'audit administrateur
+          </div>
+          {auditLogs.length === 0 ? (
+            <p className="text-sm text-stone-400">Aucune action d'administration enregistrée pour le moment.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs sm:text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-stone-400">
+                    <th className="py-2 pr-3">Date</th>
+                    <th className="py-2 pr-3">Administrateur</th>
+                    <th className="py-2 pr-3">Action</th>
+                    <th className="py-2 pr-3">Cible</th>
+                    <th className="py-2">Détails</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {auditLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-white/[0.02]">
+                      <td className="py-2.5 pr-3 font-mono text-xs text-stone-400 tabular-nums">{log.created_at}</td>
+                      <td className="py-2.5 pr-3 text-white font-medium">{log.admin_name}</td>
+                      <td className="py-2.5 pr-3">
+                        <span className="rounded-full bg-orange-500/15 border border-orange-500/30 px-2.5 py-0.5 text-xs text-orange-300 font-mono">
+                          {log.action}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-stone-300 text-xs">
+                        {log.target_type} #{log.target_id}
+                      </td>
+                      <td className="py-2.5 text-stone-400 text-xs">{log.details || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Check, Crown, FileText, Lock, ShieldCheck } from 'lucide-react';
+import { Check, Crown, ExternalLink, FileText, Lock, ShieldCheck } from 'lucide-react';
 import savannaImg from '../assets/images/zola_savanna_sunset_1794726545758.jpg';
 import { apiFetch } from '../lib/api';
 import type { PaymentRecord, SubscriptionPlan, UserProfile } from '../types';
@@ -8,12 +8,20 @@ interface PremiumViewProps {
   onUserUpdated: (user: UserProfile) => void;
 }
 
-const GATEWAYS = [
-  { id: 'cinetpay', label: 'CinetPay · Orange Money / MTN / Moov' },
-  { id: 'fedapay', label: 'FedaPay · Mobile Money Afrique de l’Ouest' },
-  { id: 'wave', label: 'Wave Mobile Money' },
-  { id: 'card', label: 'Carte Bancaire Visa / Mastercard' },
-];
+interface CheckoutIntent {
+  reference: string;
+  amount_fcfa: number;
+  amount_decimal: string;
+  currency: string;
+  plan_name: string;
+  provider: string;
+  gateway: string;
+  session_id: string | null;
+  checkout_url: string | null;
+  saspay_configured: boolean;
+  saspay_mode: 'sandbox' | 'live';
+  verification_token: string;
+}
 
 export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
@@ -25,15 +33,9 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
     status: string;
   } | null>(null);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
-  const [gateway, setGateway] = useState('cinetpay');
-  const [checkoutIntent, setCheckoutIntent] = useState<{
-    reference: string;
-    amount_fcfa: number;
-    plan_name: string;
-    provider: string;
-    gateway: string;
-    verification_token: string;
-  } | null>(null);
+  const [saspayConfigured, setSaspayConfigured] = useState(false);
+  const [saspayMode, setSaspayMode] = useState<'sandbox' | 'live'>('sandbox');
+  const [checkoutIntent, setCheckoutIntent] = useState<CheckoutIntent | null>(null);
   const [receipt, setReceipt] = useState<{
     reference: string;
     amount_fcfa: number;
@@ -60,10 +62,14 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
         status: string;
       } | null;
       payments: PaymentRecord[];
+      saspay_configured?: boolean;
+      saspay_mode?: 'sandbox' | 'live';
     }>('/api/premium/status');
     setPlans(data.plans);
     setActiveSub(data.active_subscription);
     setPayments(data.payments);
+    setSaspayConfigured(Boolean(data.saspay_configured));
+    if (data.saspay_mode) setSaspayMode(data.saspay_mode);
     const popular = data.plans.find((p) => p.is_popular) || data.plans[0];
     if (popular && !selectedPlanId) setSelectedPlanId(popular.id);
   }, [selectedPlanId]);
@@ -72,33 +78,56 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
     loadStatus();
   }, [loadStatus]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const saspayRef = params.get('saspay_ref');
+    if (!saspayRef) return;
+
+    let cancelled = false;
+    setProcessing(true);
+    setError('');
+    apiFetch<{ ok: boolean; user: UserProfile }>('/api/premium/verify', {
+      method: 'POST',
+      body: JSON.stringify({ reference: saspayRef }),
+    })
+      .then((data) => {
+        if (cancelled) return;
+        onUserUpdated(data.user);
+        setMessage('Paiement SasPay vérifié et abonnement ZOLA Premium activé !');
+        loadStatus();
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Vérification SasPay en attente.');
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setProcessing(false);
+        const url = new URL(window.location.href);
+        url.searchParams.delete('saspay_ref');
+        window.history.replaceState({}, '', url.pathname + url.search);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadStatus, onUserUpdated]);
+
   const handleCreateIntent = async () => {
     if (!selectedPlanId) return;
     setError('');
     setMessage('');
     setProcessing(true);
     try {
-      const gw = GATEWAYS.find((g) => g.id === gateway);
-      const data = await apiFetch<{
-        payment_intent: {
-          reference: string;
-          amount_fcfa: number;
-          plan_name: string;
-          provider: string;
-          gateway: string;
-          verification_token: string;
-        };
-      }>('/api/premium/checkout', {
+      const data = await apiFetch<{ payment_intent: CheckoutIntent }>('/api/premium/checkout', {
         method: 'POST',
         body: JSON.stringify({
           plan_id: selectedPlanId,
-          gateway,
-          provider: gw?.label || 'Mobile Money',
         }),
       });
       setCheckoutIntent(data.payment_intent);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Impossible d’initier le paiement.');
+      setError(err instanceof Error ? err.message : 'Impossible d’initier le paiement SasPay.');
     } finally {
       setProcessing(false);
     }
@@ -118,10 +147,10 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
       });
       onUserUpdated(data.user);
       setCheckoutIntent(null);
-      setMessage('Paiement vérifié côté serveur et abonnement ZOLA Premium activé !');
+      setMessage('Paiement SasPay vérifié côté serveur et abonnement ZOLA Premium activé !');
       loadStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Échec de vérification du paiement.');
+      setError(err instanceof Error ? err.message : 'Échec de vérification du paiement SasPay.');
     } finally {
       setProcessing(false);
     }
@@ -207,17 +236,19 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
           </div>
 
           <div className="mx-auto max-w-md space-y-3">
-            <select
-              value={gateway}
-              onChange={(e) => setGateway(e.target.value)}
-              className="w-full rounded-xl border border-white/15 bg-black/60 px-4 py-2.5 text-sm text-white"
-            >
-              {GATEWAYS.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.label}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center justify-between rounded-xl border border-amber-400/25 bg-black/60 px-4 py-3 text-left">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-300">
+                  Passerelle unique · SasPay
+                </p>
+                <p className="text-xs text-stone-300 mt-0.5">
+                  Orange Money, MTN, Moov, Wave & Carte Visa / Mastercard
+                </p>
+              </div>
+              <span className="rounded-md border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 shrink-0">
+                {saspayConfigured ? (saspayMode === 'live' ? 'SasPay Live' : 'SasPay Sandbox') : 'SasPay API v1'}
+              </span>
+            </div>
 
             <button
               type="button"
@@ -225,11 +256,11 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
               onClick={handleCreateIntent}
               className="zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-base font-bold text-white shadow-xl shadow-orange-600/30 disabled:opacity-60"
             >
-              {processing ? 'Initialisation...' : 'Souscrire maintenant'}
+              {processing ? 'Initialisation SasPay...' : 'Payer avec SasPay'}
             </button>
             <p className="flex items-center justify-center gap-1.5 text-xs text-stone-400">
               <Lock className="h-3.5 w-3.5" />
-              Paiement sécurisé avec vérification HMAC et webhook côté serveur
+              Tous les paiements sont traités et signés via SasPay (`docs.saspay.me`)
             </p>
           </div>
         </div>
@@ -259,7 +290,7 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
             </div>
           ) : (
             <p className="text-sm text-stone-400">
-              Vous utilisez actuellement le compte gratuit. Choisissez une formule ci-dessus pour activer ZOLA Premium.
+              Vous utilisez actuellement le compte gratuit. Choisissez une formule ci-dessus pour activer ZOLA Premium via SasPay.
             </p>
           )}
         </div>
@@ -328,7 +359,7 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
             <div className="flex items-center gap-3">
               <ShieldCheck className="h-7 w-7 text-emerald-400" />
               <div>
-                <h3 className="font-display text-lg font-bold text-white">Confirmation de paiement</h3>
+                <h3 className="font-display text-lg font-bold text-white">Checkout SasPay</h3>
                 <p className="text-xs text-stone-400">{checkoutIntent.provider}</p>
               </div>
             </div>
@@ -338,6 +369,12 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
                 <span className="text-stone-400">Référence</span>
                 <span className="font-mono text-xs text-white">{checkoutIntent.reference}</span>
               </div>
+              {checkoutIntent.session_id && (
+                <div className="flex justify-between">
+                  <span className="text-stone-400">Session SasPay</span>
+                  <span className="font-mono text-xs text-stone-200">{checkoutIntent.session_id}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-stone-400">Formule</span>
                 <span className="font-semibold text-white">{checkoutIntent.plan_name}</span>
@@ -345,16 +382,22 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
               <div className="flex justify-between">
                 <span className="text-stone-400">Total à payer</span>
                 <span className="font-bold text-amber-300 tabular-nums">
-                  {checkoutIntent.amount_fcfa.toLocaleString('fr-FR')} FCFA
+                  {checkoutIntent.amount_fcfa.toLocaleString('fr-FR')} {checkoutIntent.currency}
                 </span>
               </div>
             </div>
 
-            <p className="text-xs text-stone-400 leading-relaxed">
-              L'activation s'effectue uniquement après validation cryptographique HMAC de la passerelle côté serveur (`/api/premium/verify` ou `/api/premium/webhook/{checkoutIntent.gateway}`).
-            </p>
+            {checkoutIntent.checkout_url ? (
+              <p className="text-xs text-stone-300 leading-relaxed">
+                Votre session hébergée SasPay est prête. Réglez votre abonnement sur la page sécurisée SasPay, puis cliquez sur « Vérifier mon paiement ».
+              </p>
+            ) : (
+              <p className="text-xs text-stone-400 leading-relaxed">
+                Mode sandbox local actif (`SASPAY_SECRET_KEY` non configurée). La validation vérifie cryptographiquement la transaction SasPay côté serveur (`/api/premium/verify` & webhook `/api/premium/webhook/saspay`).
+              </p>
+            )}
 
-            <div className="flex justify-end gap-3">
+            <div className="flex flex-wrap justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setCheckoutIntent(null)}
@@ -362,13 +405,28 @@ export const PremiumView: React.FC<PremiumViewProps> = ({ onUserUpdated }) => {
               >
                 Annuler
               </button>
+              {checkoutIntent.checkout_url && (
+                <a
+                  href={checkoutIntent.checkout_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-400/15 px-4 py-2 text-sm font-semibold text-amber-200 hover:bg-amber-400/25"
+                >
+                  Ouvrir SasPay
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
               <button
                 type="button"
                 disabled={processing}
                 onClick={handleConfirmServerPayment}
                 className="zola-gradient rounded-full px-5 py-2 text-sm font-semibold text-white"
               >
-                {processing ? 'Vérification...' : 'Valider le paiement'}
+                {processing
+                  ? 'Vérification...'
+                  : checkoutIntent.checkout_url
+                    ? 'Vérifier mon paiement'
+                    : 'Valider le paiement SasPay'}
               </button>
             </div>
           </div>

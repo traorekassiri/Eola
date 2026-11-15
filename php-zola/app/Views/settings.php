@@ -4,6 +4,7 @@
     <a href="/discover" class="zola-brand">ZOLA</a>
     <nav class="zola-links">
       <a href="/discover">Découvrir</a>
+      <a href="/favorites">Favoris</a>
       <a href="/profile">Mon profil</a>
       <a href="/settings">Paramètres</a>
     </nav>

@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Bell,
+  Bookmark,
   Compass,
   Crown,
   Home,
@@ -11,6 +12,7 @@ import {
   User,
 } from 'lucide-react';
 import type { AppRoute, UserProfile } from '../types';
+import { PWAInstallButton } from './PWAControls';
 import { ZolaLogo } from './ZolaLogo';
 
 interface AppShellProps {
@@ -18,6 +20,7 @@ interface AppShellProps {
   activeRoute: AppRoute;
   unreadMessages: number;
   unreadNotifications: number;
+  favoritesCount: number;
   onNavigate: (route: AppRoute) => void;
   onLogout: () => void;
   children: React.ReactNode;
@@ -28,6 +31,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   activeRoute,
   unreadMessages,
   unreadNotifications,
+  favoritesCount,
   onNavigate,
   onLogout,
   children,
@@ -41,6 +45,7 @@ export const AppShell: React.FC<AppShellProps> = ({
     badge?: number;
   }> = [
     { route: 'discover', label: 'Découvrir', icon: <Compass className="h-5 w-5" /> },
+    { route: 'favorites', label: 'Favoris', icon: <Bookmark className="h-5 w-5 text-amber-400" />, badge: favoritesCount },
     { route: 'messages', label: 'Messages', icon: <MessageCircle className="h-5 w-5" />, badge: unreadMessages },
     { route: 'notifications', label: 'Notifications', icon: <Bell className="h-5 w-5" />, badge: unreadNotifications },
     { route: 'profile', label: 'Mon profil', icon: <User className="h-5 w-5" /> },
@@ -64,6 +69,7 @@ export const AppShell: React.FC<AppShellProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            <PWAInstallButton compact />
             {!user.is_premium ? (
               <button
                 type="button"
@@ -83,6 +89,25 @@ export const AppShell: React.FC<AppShellProps> = ({
                 Premium actif
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => onNavigate('favorites')}
+              aria-label="Favoris"
+              title="Mes Favoris"
+              className={`lg:hidden relative flex h-10 w-10 items-center justify-center rounded-full border transition-colors ${
+                activeRoute === 'favorites'
+                  ? 'border-amber-400/50 bg-amber-400/15 text-amber-300'
+                  : 'border-white/10 bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <Bookmark className="h-4 w-4" />
+              {favoritesCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-bold text-stone-950 tabular-nums">
+                  {favoritesCount}
+                </span>
+              )}
+            </button>
 
             <button
               type="button"

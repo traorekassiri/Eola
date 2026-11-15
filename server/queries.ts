@@ -78,19 +78,40 @@ export function getFullUserProfile(userId: number, viewerId?: number): UserProfi
     )
     .get(userId) as { expires_at: string } | undefined;
 
+  const activeBoost = db
+    .prepare(
+      "SELECT expires_at FROM profile_boosts WHERE user_id = ? AND datetime(expires_at) > datetime('now') ORDER BY id DESC LIMIT 1"
+    )
+    .get(userId) as { expires_at: string } | undefined;
+
+  const twoFactorRow =
+    viewerId === userId
+      ? (db.prepare('SELECT two_factor_enabled FROM users WHERE id = ?').get(userId) as
+          | { two_factor_enabled: number }
+          | undefined)
+      : undefined;
+
   let likedByMe = false;
   let isMatch = false;
+  let isSuperLiked = false;
+  let isFavorite = false;
   let sharedInterestsCount = 0;
   let compatibilityScore: number | undefined;
 
   if (viewerId && viewerId !== userId) {
-    likedByMe = Boolean(
-      db.prepare('SELECT 1 FROM likes WHERE from_user_id = ? AND to_user_id = ?').get(viewerId, userId)
-    );
+    const likeRow = db
+      .prepare('SELECT is_super FROM likes WHERE from_user_id = ? AND to_user_id = ?')
+      .get(viewerId, userId) as { is_super: number } | undefined;
+    likedByMe = Boolean(likeRow);
+    isSuperLiked = Boolean(likeRow?.is_super);
+
     const minId = Math.min(viewerId, userId);
     const maxId = Math.max(viewerId, userId);
     isMatch = Boolean(
       db.prepare('SELECT 1 FROM matches WHERE user_one_id = ? AND user_two_id = ?').get(minId, maxId)
+    );
+    isFavorite = Boolean(
+      db.prepare('SELECT 1 FROM favorites WHERE user_id = ? AND favorite_user_id = ?').get(viewerId, userId)
     );
 
     const viewerRow = db
@@ -131,6 +152,8 @@ export function getFullUserProfile(userId: number, viewerId?: number): UserProfi
     profile_visible: Boolean(row.profile_visible),
     is_premium: Boolean(activeSub),
     premium_expires_at: activeSub ? activeSub.expires_at : null,
+    is_boosted: Boolean(activeBoost),
+    two_factor_enabled: Boolean(twoFactorRow?.two_factor_enabled),
     full_name: fullName,
     first_name: firstName,
     birth_date: String(row.birth_date),
@@ -148,7 +171,9 @@ export function getFullUserProfile(userId: number, viewerId?: number): UserProfi
     interests,
     photos,
     liked_by_me: likedByMe,
+    is_super_liked: isSuperLiked,
     is_match: isMatch,
+    is_favorite: isFavorite,
     shared_interests_count: sharedInterestsCount,
     compatibility_score: compatibilityScore,
   };

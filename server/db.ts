@@ -173,7 +173,7 @@ export function initDatabase() {
       plan_id INTEGER NOT NULL,
       amount_fcfa INTEGER NOT NULL,
       currency TEXT NOT NULL DEFAULT 'XOF',
-      provider TEXT NOT NULL DEFAULT 'ZOLA Pay (Mobile Money / Carte)',
+      provider TEXT NOT NULL DEFAULT 'SasPay (Mobile Money & Carte)',
       reference TEXT NOT NULL UNIQUE,
       verification_hmac TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -251,19 +251,87 @@ export function initDatabase() {
       reviewed_at TEXT,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS profile_boosts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(message_id, user_id, emoji),
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      user_agent TEXT NOT NULL DEFAULT '',
+      ip_address TEXT NOT NULL DEFAULT '',
+      revoked INTEGER NOT NULL DEFAULT 0,
+      last_active_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL DEFAULT '',
+      details TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS favorites (
+      user_id INTEGER NOT NULL,
+      favorite_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, favorite_user_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (favorite_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
 
   // Safe migrations for pre-existing local SQLite databases
+  const userCols = db.prepare("PRAGMA table_info('users')").all() as Array<{ name: string }>;
+  if (!userCols.some((c) => c.name === 'two_factor_enabled')) {
+    db.exec('ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!userCols.some((c) => c.name === 'two_factor_secret')) {
+    db.exec('ALTER TABLE users ADD COLUMN two_factor_secret TEXT');
+  }
+  const likeCols = db.prepare("PRAGMA table_info('likes')").all() as Array<{ name: string }>;
+  if (!likeCols.some((c) => c.name === 'is_super')) {
+    db.exec('ALTER TABLE likes ADD COLUMN is_super INTEGER NOT NULL DEFAULT 0');
+  }
   const msgCols = db.prepare("PRAGMA table_info('messages')").all() as Array<{ name: string }>;
   if (!msgCols.some((c) => c.name === 'audio_url')) {
     db.exec('ALTER TABLE messages ADD COLUMN audio_url TEXT');
   }
   const payCols = db.prepare("PRAGMA table_info('payments')").all() as Array<{ name: string }>;
   if (!payCols.some((c) => c.name === 'gateway')) {
-    db.exec("ALTER TABLE payments ADD COLUMN gateway TEXT NOT NULL DEFAULT 'zola_hmac'");
+    db.exec("ALTER TABLE payments ADD COLUMN gateway TEXT NOT NULL DEFAULT 'saspay'");
   }
   if (!payCols.some((c) => c.name === 'webhook_payload')) {
     db.exec('ALTER TABLE payments ADD COLUMN webhook_payload TEXT');
+  }
+  if (!payCols.some((c) => c.name === 'saspay_session_id')) {
+    db.exec('ALTER TABLE payments ADD COLUMN saspay_session_id TEXT');
+  }
+  if (!payCols.some((c) => c.name === 'checkout_url')) {
+    db.exec('ALTER TABLE payments ADD COLUMN checkout_url TEXT');
   }
 
   seedInitialData();
@@ -320,7 +388,7 @@ function seedInitialData() {
       oauth_google_enabled: process.env.GOOGLE_CLIENT_ID ? '1' : '0',
       oauth_facebook_enabled: process.env.FACEBOOK_APP_ID ? '1' : '0',
       oauth_apple_enabled: process.env.APPLE_CLIENT_ID ? '1' : '0',
-      payment_provider_label: 'Paiement sécurisé Mobile Money & Carte',
+      payment_provider_label: 'Paiement sécurisé par SasPay (Mobile Money & Carte)',
     };
     for (const [k, v] of Object.entries(defaults)) {
       insertSetting.run(k, v);

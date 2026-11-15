@@ -5,16 +5,28 @@ final class MatchModel
 {
     public function __construct(private PDO $pdo) {}
 
-    public function likeUser(int $fromId, int $toId): array
+    public function likeUser(int $fromId, int $toId, bool $isSuper = false): array
     {
         if ($fromId === $toId) {
             throw new InvalidArgumentException('Action invalide.');
         }
 
+        if ($isSuper) {
+            $isPremStmt = $this->pdo->prepare("SELECT 1 FROM subscriptions WHERE user_id = ? AND status = 'active' AND expires_at > NOW() LIMIT 1");
+            $isPremStmt->execute([$fromId]);
+            $quota = $isPremStmt->fetchColumn() ? 5 : 1;
+
+            $qStmt = $this->pdo->prepare('SELECT COUNT(*) FROM likes WHERE from_user_id = ? AND is_super = 1 AND DATE(created_at) = CURDATE()');
+            $qStmt->execute([$fromId]);
+            if ((int) $qStmt->fetchColumn() >= $quota) {
+                throw new RuntimeException('Quota quotidien de Super-Likes atteint.');
+            }
+        }
+
         $this->pdo->beginTransaction();
         try {
-            $stmt = $this->pdo->prepare('INSERT IGNORE INTO likes (from_user_id, to_user_id) VALUES (?, ?)');
-            $stmt->execute([$fromId, $toId]);
+            $stmt = $this->pdo->prepare('INSERT IGNORE INTO likes (from_user_id, to_user_id, is_super) VALUES (?, ?, ?)');
+            $stmt->execute([$fromId, $toId, $isSuper ? 1 : 0]);
 
             $chk = $this->pdo->prepare('SELECT id FROM likes WHERE from_user_id = ? AND to_user_id = ?');
             $chk->execute([$toId, $fromId]);
@@ -22,7 +34,7 @@ final class MatchModel
 
             if (!$mutual) {
                 $this->pdo->commit();
-                return ['matched' => false, 'conversation_id' => null];
+                return ['matched' => false, 'is_super' => $isSuper, 'conversation_id' => null];
             }
 
             $u1 = min($fromId, $toId);
@@ -43,7 +55,7 @@ final class MatchModel
             $cm->execute([$convId, $toId]);
 
             $this->pdo->commit();
-            return ['matched' => true, 'conversation_id' => $convId];
+            return ['matched' => true, 'is_super' => $isSuper, 'conversation_id' => $convId];
         } catch (Throwable $e) {
             $this->pdo->rollBack();
             throw $e;

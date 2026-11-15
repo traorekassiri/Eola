@@ -4,10 +4,12 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { AppShell } from './components/AppShell';
 import { AuthViews } from './components/AuthViews';
 import { DiscoverView } from './components/DiscoverView';
+import { FavoritesView } from './components/FavoritesView';
 import { LandingPage } from './components/LandingPage';
 import { MemberProfileView } from './components/MemberProfileView';
 import { MessagesView, type WsSignalEvent } from './components/MessagesView';
 import { PremiumView } from './components/PremiumView';
+import { OfflineIndicator } from './components/PWAControls';
 import {
   EditProfileView,
   NotificationsView,
@@ -52,6 +54,7 @@ export default function App() {
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadMessages, setUnreadMessages] = useState(0);
+  const [favoritesCount, setFavoritesCount] = useState(0);
 
   const [wsLastMessage, setWsLastMessage] = useState<MessageItem | null>(null);
   const [wsReadConvId, setWsReadConvId] = useState<number | null>(null);
@@ -80,13 +83,15 @@ export default function App() {
 
   const loadNotificationsAndUnread = useCallback(async () => {
     try {
-      const [notifRes, convRes] = await Promise.all([
+      const [notifRes, convRes, favRes] = await Promise.all([
         apiFetch<{ notifications: NotificationItem[] }>('/api/notifications'),
         apiFetch<{ conversations: Array<{ unread_count: number }> }>('/api/messages/conversations'),
+        apiFetch<{ count: number }>('/api/favorites'),
       ]);
       setNotifications(notifRes.notifications);
       const totalUnread = convRes.conversations.reduce((acc, c) => acc + c.unread_count, 0);
       setUnreadMessages(totalUnread);
+      setFavoritesCount(favRes.count);
     } catch {
       // Ignore if logged out
     }
@@ -99,6 +104,9 @@ export default function App() {
         .then((res) => {
           setCsrfToken(res.csrfToken);
           setUser(res.user);
+          if (res.user && new URLSearchParams(window.location.search).has('saspay_ref')) {
+            setRoute('premium');
+          }
         })
         .catch(() => setUser(null)),
     ]).finally(() => setBooting(false));
@@ -129,11 +137,28 @@ export default function App() {
           loadNotificationsAndUnread();
         } else if (
           msg.event.startsWith('typing:') ||
-          msg.event.startsWith('call:')
+          msg.event.startsWith('call:') ||
+          msg.event === 'message:reaction' ||
+          msg.event === 'user:blocked'
         ) {
-          setWsSignalEvent({ event: msg.event, payload: msg.payload as Record<string, unknown> });
+          const payload = msg.payload as Record<string, unknown>;
+          setWsSignalEvent({ event: msg.event, payload });
           if (msg.event === 'call:offer') {
             setRoute('messages');
+          } else if (msg.event === 'user:blocked') {
+            const blockedById = Number(payload.blockedByUserId || 0);
+            const blockedId = Number(payload.blockedUserId || 0);
+            loadNotificationsAndUnread();
+            setWsMatchAlert((prev) =>
+              prev && (prev.partner.id === blockedById || prev.partner.id === blockedId) ? null : prev
+            );
+            setSelectedMemberId((prev) => {
+              if (prev && (prev === blockedById || prev === blockedId)) {
+                setRoute((r) => (r === 'member-profile' ? 'discover' : r));
+                return null;
+              }
+              return prev;
+            });
           }
         }
       } catch {
@@ -155,6 +180,7 @@ export default function App() {
   const handleNavigate = (next: AppRoute) => {
     const protectedRoutes: AppRoute[] = [
       'discover',
+      'favorites',
       'messages',
       'notifications',
       'profile',
@@ -178,6 +204,7 @@ export default function App() {
     setUser(null);
     setNotifications([]);
     setUnreadMessages(0);
+    setFavoritesCount(0);
     setRoute('landing');
     loadLanding();
   };
@@ -199,14 +226,17 @@ export default function App() {
 
   if (route === 'landing') {
     return (
-      <LandingPage
-        activeMembers={activeMembers}
-        verifiedMembers={verifiedMembers}
-        settings={settings}
-        plans={plans}
-        onNavigate={handleNavigate}
-        isAuthenticated={Boolean(user)}
-      />
+      <>
+        <LandingPage
+          activeMembers={activeMembers}
+          verifiedMembers={verifiedMembers}
+          settings={settings}
+          plans={plans}
+          onNavigate={handleNavigate}
+          isAuthenticated={Boolean(user)}
+        />
+        <OfflineIndicator />
+      </>
     );
   }
 
@@ -241,30 +271,36 @@ export default function App() {
 
   if (route === 'register' || route === 'login' || route === 'forgot-password') {
     return (
-      <AuthViews
-        mode={route}
-        settings={settings}
-        onNavigate={handleNavigate}
-        onAuthSuccess={(authedUser) => {
-          setUser(authedUser);
-          loadLanding();
-          setRoute('discover');
-        }}
-      />
+      <>
+        <AuthViews
+          mode={route}
+          settings={settings}
+          onNavigate={handleNavigate}
+          onAuthSuccess={(authedUser) => {
+            setUser(authedUser);
+            loadLanding();
+            setRoute('discover');
+          }}
+        />
+        <OfflineIndicator />
+      </>
     );
   }
 
   if (!user) {
     return (
-      <AuthViews
-        mode="login"
-        settings={settings}
-        onNavigate={handleNavigate}
-        onAuthSuccess={(authedUser) => {
-          setUser(authedUser);
-          setRoute('discover');
-        }}
-      />
+      <>
+        <AuthViews
+          mode="login"
+          settings={settings}
+          onNavigate={handleNavigate}
+          onAuthSuccess={(authedUser) => {
+            setUser(authedUser);
+            setRoute('discover');
+          }}
+        />
+        <OfflineIndicator />
+      </>
     );
   }
 
@@ -276,6 +312,7 @@ export default function App() {
       activeRoute={route}
       unreadMessages={unreadMessages}
       unreadNotifications={unreadNotifications}
+      favoritesCount={favoritesCount}
       onNavigate={handleNavigate}
       onLogout={handleLogout}
     >
@@ -292,6 +329,23 @@ export default function App() {
             setRoute('messages');
           }}
           onGoPremium={() => setRoute('premium')}
+          onFavoritesChanged={(count) => setFavoritesCount(count)}
+        />
+      )}
+
+      {route === 'favorites' && (
+        <FavoritesView
+          onViewProfile={(id) => {
+            setSelectedMemberId(id);
+            setRoute('member-profile');
+          }}
+          onOpenChat={(convId) => {
+            setActiveConversationId(convId);
+            setRoute('messages');
+          }}
+          onBrowseDiscover={() => setRoute('discover')}
+          onFavoritesChanged={(count) => setFavoritesCount(count)}
+          onMatched={(partner, conversationId) => setWsMatchAlert({ partner, conversationId })}
         />
       )}
 
@@ -347,6 +401,17 @@ export default function App() {
             setRoute('messages');
           }}
           onMatched={(partner, conversationId) => setWsMatchAlert({ partner, conversationId })}
+          onFavoritesChanged={(count) => setFavoritesCount(count)}
+          onBlocked={(blockedUserId, updatedConvs) => {
+            setSelectedMemberId(null);
+            setActiveConversationId(null);
+            setNotifications((prev) => prev.filter((n) => n.related_user_id !== blockedUserId));
+            setWsMatchAlert((prev) => (prev && prev.partner.id === blockedUserId ? null : prev));
+            if (Array.isArray(updatedConvs)) {
+              setUnreadMessages(updatedConvs.reduce((acc, c) => acc + c.unread_count, 0));
+            }
+            loadNotificationsAndUnread();
+          }}
         />
       )}
 
@@ -432,6 +497,7 @@ export default function App() {
           </div>
         </div>
       )}
+      <OfflineIndicator />
     </AppShell>
   );
 }

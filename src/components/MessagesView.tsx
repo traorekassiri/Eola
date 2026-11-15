@@ -12,11 +12,19 @@ import {
   Search,
   Send,
   Smile,
+  Sparkles,
   Square,
+  Sticker,
   Video,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
-import type { ConversationSummary, MessageItem, UserProfile } from '../types';
+import {
+  AFRICAN_STICKERS,
+  getStickerDataUrl,
+  stickerToPngFile,
+  type CulturalSticker,
+} from '../lib/africanStickers';
+import type { ConversationSummary, MessageItem, MessageReaction, UserProfile } from '../types';
 
 export interface WsSignalEvent {
   event: string;
@@ -35,6 +43,12 @@ interface MessagesViewProps {
 }
 
 const EMOJI_LIST = ['😊', '❤️', '🔥', '😍', '👋', '🌹', '✨', '😂', '🥰', '🙏'];
+const REACTION_EMOJIS = ['❤️', '😊', '🔥', '😂', '👏', '🙏'];
+const ICEBREAKERS = [
+  "Salut ! J'adore ton profil, quel est ton endroit préféré dans ta ville ?",
+  'Plutôt café du matin ou balade au coucher du soleil ?',
+  'Quelle chanson ou quel artiste écoutes-tu en boucle en ce moment ?',
+];
 
 export const MessagesView: React.FC<MessagesViewProps> = ({
   currentUser,
@@ -53,6 +67,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   const [text, setText] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [showEmojis, setShowEmojis] = useState(false);
+  const [showStickers, setShowStickers] = useState(false);
   const [sending, setSending] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [partnerTyping, setPartnerTyping] = useState(false);
@@ -79,6 +94,9 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   // Report modal
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState('Comportement inapproprié');
+
+  const [reactMenuMsgId, setReactMenuMsgId] = useState<number | null>(null);
+  const iceServersRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,6 +125,13 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
 
   useEffect(() => {
     loadConversations();
+    apiFetch<{ iceServers: RTCIceServer[] }>('/api/rtc/config')
+      .then((res) => {
+        if (Array.isArray(res.iceServers) && res.iceServers.length > 0) {
+          iceServersRef.current = res.iceServers;
+        }
+      })
+      .catch(() => {});
   }, [loadConversations]);
 
   useEffect(() => {
@@ -115,6 +140,8 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
 
   useEffect(() => {
     setPartnerTyping(false);
+    setShowStickers(false);
+    setShowEmojis(false);
     if (activeConvId) loadMessages(activeConvId);
   }, [activeConvId, loadMessages]);
 
@@ -170,8 +197,24 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       peerRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate as RTCIceCandidateInit)).catch(() => {});
     } else if (event === 'call:end' || event === 'call:reject') {
       cleanupCall();
+    } else if (event === 'message:reaction' && convId === activeConvId) {
+      loadMessages(activeConvId);
+    } else if (event === 'user:blocked') {
+      const blockedById = Number(payload.blockedByUserId || 0);
+      const blockedId = Number(payload.blockedUserId || 0);
+      setConversations((prev) => {
+        const active = prev.find((c) => c.id === activeConvId);
+        if (active && (active.partner.id === blockedById || active.partner.id === blockedId)) {
+          setActiveConvId(null);
+          setMessages([]);
+          cleanupCall();
+        }
+        return prev.filter((c) => c.partner.id !== blockedById && c.partner.id !== blockedId);
+      });
+      loadConversations();
+      onConversationsChanged();
     }
-  }, [wsSignalEvent, activeConvId, cleanupCall]);
+  }, [wsSignalEvent, activeConvId, cleanupCall, loadMessages, loadConversations, onConversationsChanged]);
 
   const activeConversation = conversations.find((c) => c.id === activeConvId) || null;
   const filteredConvs = conversations.filter((c) =>
@@ -192,6 +235,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     e.preventDefault();
     if (!activeConvId || (!text.trim() && !imageFile)) return;
     setSending(true);
+    setCallError('');
     try {
       const form = new FormData();
       form.append('content', text.trim());
@@ -207,10 +251,56 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       setText('');
       setImageFile(null);
       setShowEmojis(false);
+      setShowStickers(false);
       loadConversations();
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+    } catch (err) {
+      setCallError(err instanceof Error ? err.message : "Impossible d'envoyer ce message.");
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleSendSticker = async (sticker: CulturalSticker) => {
+    if (!activeConvId || sending) return;
+    setSending(true);
+    setCallError('');
+    try {
+      const pngFile = await stickerToPngFile(sticker);
+      const form = new FormData();
+      form.append('content', '');
+      form.append('image', pngFile);
+
+      const data = await apiFetch<{ message: MessageItem }>(`/api/messages/conversations/${activeConvId}`, {
+        method: 'POST',
+        body: form,
+      });
+
+      sendWsEvent('typing:stop', { conversationId: activeConvId });
+      setMessages((prev) => [...prev, data.message]);
+      setShowStickers(false);
+      setShowEmojis(false);
+      loadConversations();
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+    } catch (err) {
+      setCallError(err instanceof Error ? err.message : "Impossible d'envoyer ce sticker.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleReact = async (messageId: number, emoji: string) => {
+    try {
+      const res = await apiFetch<{ reactions: MessageReaction[] }>(`/api/messages/${messageId}/react`, {
+        method: 'POST',
+        body: JSON.stringify({ emoji }),
+      });
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, reactions: res.reactions } : m))
+      );
+      setReactMenuMsgId(null);
+    } catch {
+      // Ignore reaction toggle errors
     }
   };
 
@@ -257,7 +347,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   // WebRTC Call helpers
   const buildPeer = (convId: number) => {
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers: iceServersRef.current,
     });
     pc.onicecandidate = (ev) => {
       if (ev.candidate) {
@@ -323,10 +413,18 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   };
 
   const handleBlock = async (partnerId: number) => {
-    await apiFetch(`/api/users/${partnerId}/block`, { method: 'POST' });
+    const res = await apiFetch<{ conversations?: ConversationSummary[] }>(`/api/users/${partnerId}/block`, {
+      method: 'POST',
+    });
     setMenuOpen(false);
     setActiveConvId(null);
-    loadConversations();
+    setMessages([]);
+    if (Array.isArray(res.conversations)) {
+      setConversations(res.conversations);
+    } else {
+      await loadConversations();
+    }
+    onConversationsChanged();
   };
 
   const handleReportSubmit = async (e: React.FormEvent) => {
@@ -539,38 +637,111 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
             )}
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {messages.length === 0 && (
+                <div className="rounded-2xl border border-orange-500/20 bg-orange-500/5 p-4 space-y-3 text-center">
+                  <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-orange-300">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Briser la glace avec {activeConversation.partner.first_name}
+                  </div>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {ICEBREAKERS.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => setText(prompt)}
+                        className="rounded-xl border border-white/12 bg-white/5 px-3 py-2 text-xs text-stone-200 hover:border-orange-500/50 hover:bg-orange-500/10 text-left transition-colors"
+                      >
+                        « {prompt} »
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {messages.map((msg) => {
                 const mine = msg.sender_id === currentUser.id;
+                const reactions = msg.reactions || [];
                 return (
-                  <div key={msg.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
-                        mine
-                          ? 'zola-gradient text-white rounded-br-sm'
-                          : 'bg-[#1D1615] border border-white/8 text-stone-100 rounded-bl-sm'
-                      }`}
-                    >
-                      {msg.image_url && (
-                        <img
-                          src={msg.image_url}
-                          alt="Pièce jointe"
-                          className="mb-2 max-h-60 rounded-xl object-cover"
-                        />
-                      )}
-                      {msg.audio_url && (
-                        <audio controls src={msg.audio_url} className="mb-1 max-w-[230px] h-9" />
-                      )}
-                      {msg.content && <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>}
-                      <div className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${mine ? 'text-white/80' : 'text-stone-400'}`}>
-                        <span className="tabular-nums">{formatTime(msg.created_at)}</span>
-                        {mine &&
-                          (msg.is_read ? (
-                            <CheckCheck className="h-3.5 w-3.5 text-amber-200" />
-                          ) : (
-                            <Check className="h-3.5 w-3.5" />
-                          ))}
+                  <div key={msg.id} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
+                    <div className={`group flex items-end gap-1.5 max-w-[82%] ${mine ? 'flex-row-reverse' : 'flex-row'}`}>
+                      <div
+                        className={`rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                          mine
+                            ? 'zola-gradient text-white rounded-br-sm'
+                            : 'bg-[#1D1615] border border-white/8 text-stone-100 rounded-bl-sm'
+                        }`}
+                      >
+                        {msg.image_url && (
+                          <img
+                            src={msg.image_url}
+                            alt="Pièce jointe"
+                            className={`max-h-56 w-auto rounded-xl object-contain ${msg.content ? 'mb-2' : 'mb-1'}`}
+                          />
+                        )}
+                        {msg.audio_url && (
+                          <audio controls src={msg.audio_url} className="mb-1 max-w-[230px] h-9" />
+                        )}
+                        {msg.content && <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>}
+                        <div className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${mine ? 'text-white/80' : 'text-stone-400'}`}>
+                          <span className="tabular-nums">{formatTime(msg.created_at)}</span>
+                          {mine &&
+                            (msg.is_read ? (
+                              <CheckCheck className="h-3.5 w-3.5 text-amber-200" />
+                            ) : (
+                              <Check className="h-3.5 w-3.5" />
+                            ))}
+                        </div>
+                      </div>
+
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setReactMenuMsgId(reactMenuMsgId === msg.id ? null : msg.id)}
+                          aria-label="Réagir"
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10 transition-opacity"
+                        >
+                          <Smile className="h-3.5 w-3.5" />
+                        </button>
+                        {reactMenuMsgId === msg.id && (
+                          <div
+                            className={`absolute bottom-8 z-30 flex items-center gap-1 rounded-full border border-white/15 bg-[#1B1413] px-2 py-1 shadow-xl ${
+                              mine ? 'right-0' : 'left-0'
+                            }`}
+                          >
+                            {REACTION_EMOJIS.map((em) => (
+                              <button
+                                key={em}
+                                type="button"
+                                onClick={() => handleReact(msg.id, em)}
+                                className="rounded-full p-1 text-sm hover:bg-white/15 transition-transform hover:scale-110"
+                              >
+                                {em}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
+
+                    {reactions.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {reactions.map((r) => (
+                          <button
+                            key={r.emoji}
+                            type="button"
+                            onClick={() => handleReact(msg.id, r.emoji)}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                              r.reacted_by_me
+                                ? 'border-orange-500/60 bg-orange-500/20 text-white'
+                                : 'border-white/12 bg-white/5 text-stone-300 hover:bg-white/10'
+                            }`}
+                          >
+                            <span>{r.emoji}</span>
+                            <span className="tabular-nums">{r.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -590,6 +761,45 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                       {em}
                     </button>
                   ))}
+                </div>
+              )}
+
+              {showStickers && (
+                <div className="rounded-2xl border border-amber-400/25 bg-[#191210] p-3 space-y-2.5 shadow-xl">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-display font-bold text-amber-300 flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Stickers culturels africains
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowStickers(false)}
+                      className="text-stone-400 hover:text-white"
+                    >
+                      Fermer
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+                    {AFRICAN_STICKERS.map((st) => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        disabled={sending}
+                        onClick={() => handleSendSticker(st)}
+                        title={`${st.label} — ${st.origin}`}
+                        className="group flex flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 p-1.5 hover:border-amber-400/60 hover:bg-amber-400/10 transition-all disabled:opacity-50"
+                      >
+                        <img
+                          src={getStickerDataUrl(st)}
+                          alt={st.label}
+                          className="h-12 w-12 rounded-lg object-contain transition-transform group-hover:scale-105"
+                        />
+                        <span className="text-[10px] font-medium text-stone-300 truncate w-full text-center">
+                          {st.label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -620,7 +830,26 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowEmojis((v) => !v)}
+                  onClick={() => {
+                    setShowStickers((v) => !v);
+                    setShowEmojis(false);
+                  }}
+                  title="Stickers culturels"
+                  aria-label="Stickers culturels"
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                    showStickers
+                      ? 'border-amber-400/60 bg-amber-400/15 text-amber-300'
+                      : 'border-white/10 bg-white/5 text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <Sticker className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEmojis((v) => !v);
+                    setShowStickers(false);
+                  }}
                   title="Émoticônes"
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-stone-300 hover:text-white"
                 >

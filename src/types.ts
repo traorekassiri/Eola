@@ -4,6 +4,7 @@ export type AppRoute =
   | 'login'
   | 'forgot-password'
   | 'discover'
+  | 'favorites'
   | 'messages'
   | 'notifications'
   | 'profile'
@@ -41,6 +42,8 @@ export interface UserProfile {
   profile_visible: boolean;
   is_premium: boolean;
   premium_expires_at: string | null;
+  is_boosted?: boolean;
+  two_factor_enabled?: boolean;
   full_name: string;
   first_name: string;
   birth_date: string;
@@ -58,7 +61,10 @@ export interface UserProfile {
   interests: Interest[];
   photos: ProfilePhoto[];
   liked_by_me?: boolean;
+  is_super_liked?: boolean;
   is_match?: boolean;
+  is_favorite?: boolean;
+  favorited_at?: string;
   shared_interests_count?: number;
   compatibility_score?: number;
 }
@@ -83,6 +89,12 @@ export interface ConversationSummary {
   unread_count: number;
 }
 
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  reacted_by_me: boolean;
+}
+
 export interface MessageItem {
   id: number;
   conversation_id: number;
@@ -92,6 +104,7 @@ export interface MessageItem {
   audio_url: string | null;
   is_read: boolean;
   created_at: string;
+  reactions?: MessageReaction[];
 }
 
 export interface NotificationItem {
@@ -171,6 +184,37 @@ export interface SiteSettings {
   payment_provider_label: string;
 }
 
+export interface MonthlySignupPoint {
+  month: string;
+  label: string;
+  count: number;
+  revenue_fcfa?: number;
+}
+
+export interface CountryDistributionPoint {
+  country: string;
+  count: number;
+}
+
+export interface AdminAuditLog {
+  id: number;
+  admin_name: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: string;
+  created_at: string;
+}
+
+export interface UserSessionRecord {
+  session_id: string;
+  user_agent: string;
+  ip_address: string;
+  last_active_at: string;
+  created_at: string;
+  is_current: boolean;
+}
+
 export interface AdminStats {
   total_users: number;
   active_users: number;
@@ -180,6 +224,7 @@ export interface AdminStats {
   total_messages: number;
   active_subscriptions: number;
   total_revenue_fcfa: number;
+  conversion_rate: number;
   pending_reports: number;
   pending_verifications: number;
 }

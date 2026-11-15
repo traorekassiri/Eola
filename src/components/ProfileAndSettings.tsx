@@ -5,6 +5,8 @@ import {
   Check,
   HelpCircle,
   Info,
+  KeyRound,
+  Laptop,
   Lock,
   LogOut,
   Plus,
@@ -14,7 +16,7 @@ import {
   User,
 } from 'lucide-react';
 import { AFRICAN_COUNTRIES, ZODIAC_SIGNS, apiFetch } from '../lib/api';
-import type { Interest, NotificationItem, UserProfile } from '../types';
+import type { Interest, NotificationItem, UserProfile, UserSessionRecord } from '../types';
 
 interface EditProfileViewProps {
   user: UserProfile;
@@ -480,6 +482,78 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [feedback, setFeedback] = useState('');
   const [error, setError] = useState('');
 
+  // 2FA TOTP & Sessions state
+  const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
+  const [totpCode, setTotpCode] = useState('');
+  const [sessions, setSessions] = useState<UserSessionRecord[]>([]);
+
+  const loadSessions = async () => {
+    try {
+      const res = await apiFetch<{ sessions: UserSessionRecord[] }>('/api/settings/sessions');
+      setSessions(res.sessions);
+    } catch {
+      // Ignore session fetch error
+    }
+  };
+
+  React.useEffect(() => {
+    if (section === 'preferences') {
+      loadSessions();
+    }
+  }, [section]);
+
+  const handleSetup2FA = async () => {
+    setError('');
+    setFeedback('');
+    try {
+      const res = await apiFetch<{ secret: string; otpauth_uri: string }>('/api/settings/2fa/setup', {
+        method: 'POST',
+      });
+      setTotpSetup(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erreur lors de la préparation 2FA.');
+    }
+  };
+
+  const handleEnable2FA = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await apiFetch<{ user: UserProfile }>('/api/settings/2fa/enable', {
+        method: 'POST',
+        body: JSON.stringify({ code: totpCode.trim() }),
+      });
+      onUpdated(res.user);
+      setTotpSetup(null);
+      setTotpCode('');
+      setFeedback('Authentification à deux facteurs (2FA) activée.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Code 2FA invalide.');
+    }
+  };
+
+  const handleDisable2FA = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await apiFetch<{ user: UserProfile }>('/api/settings/2fa/disable', {
+        method: 'POST',
+        body: JSON.stringify({ code: totpCode.trim() }),
+      });
+      onUpdated(res.user);
+      setTotpCode('');
+      setFeedback('Authentification à deux facteurs (2FA) désactivée.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Code 2FA invalide.');
+    }
+  };
+
+  const handleRevokeSession = async (sessionId: string) => {
+    await apiFetch(`/api/settings/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+    setFeedback('Session révoquée.');
+  };
+
   const saveToggles = async (nextMsg: boolean, nextMatch: boolean, nextVisible: boolean) => {
     setFeedback('');
     setError('');
@@ -712,6 +786,131 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 Mettre à jour
               </button>
             </form>
+
+            {/* 2FA TOTP Security Card */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-white font-semibold">
+                  <KeyRound className="h-4 w-4 text-amber-400" />
+                  Authentification à deux facteurs (2FA TOTP)
+                </div>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                    user.two_factor_enabled
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-white/5 text-stone-400 border border-white/10'
+                  }`}
+                >
+                  {user.two_factor_enabled ? 'Activée' : 'Désactivée'}
+                </span>
+              </div>
+
+              {user.two_factor_enabled ? (
+                <form onSubmit={handleDisable2FA} className="space-y-3">
+                  <p className="text-xs text-stone-400">
+                    Votre compte est protégé par TOTP. Entrez un code actuel de votre application pour désactiver la 2FA.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      required
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Code à 6 chiffres"
+                      className="rounded-xl border border-white/12 bg-black/30 px-3.5 py-2 text-sm font-mono text-white w-44"
+                    />
+                    <button
+                      type="submit"
+                      className="rounded-full border border-red-500/40 bg-red-500/15 px-4 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/25"
+                    >
+                      Désactiver la 2FA
+                    </button>
+                  </div>
+                </form>
+              ) : totpSetup ? (
+                <form onSubmit={handleEnable2FA} className="space-y-3">
+                  <p className="text-xs text-stone-300 leading-relaxed">
+                    Ajoutez cette clé secrète dans Google Authenticator, Authy ou 1Password :
+                  </p>
+                  <div className="rounded-xl border border-amber-400/30 bg-black/40 p-3 space-y-1">
+                    <p className="font-mono text-sm font-bold tracking-wider text-amber-300 select-all">
+                      {totpSetup.secret}
+                    </p>
+                    <p className="text-[11px] text-stone-400 break-all select-all">{totpSetup.otpauth_uri}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      required
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Code de vérification (6 chiffres)"
+                      className="rounded-xl border border-white/12 bg-black/30 px-3.5 py-2 text-sm font-mono text-white w-56"
+                    />
+                    <button type="submit" className="zola-gradient rounded-full px-5 py-2 text-xs font-semibold text-white">
+                      Activer la 2FA
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-stone-400">
+                    Ajoutez une seconde couche de sécurité via code TOTP à 6 chiffres à chaque connexion.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleSetup2FA}
+                    className="rounded-full border border-amber-400/35 bg-amber-400/10 px-4 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-400/20"
+                  >
+                    Configurer la 2FA
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Active Sessions Panel */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-3">
+              <div className="flex items-center gap-2 text-white font-semibold">
+                <Laptop className="h-4 w-4 text-orange-400" />
+                Sessions actives ({sessions.length})
+              </div>
+              {sessions.length === 0 ? (
+                <p className="text-xs text-stone-400">Aucune autre session enregistrée.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sessions.map((s) => (
+                    <div
+                      key={s.session_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/8 bg-black/25 px-3.5 py-2.5 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-white font-medium truncate">{s.user_agent}</p>
+                        <p className="text-stone-400 tabular-nums">
+                          IP : {s.ip_address} · Activité : {s.last_active_at}
+                        </p>
+                      </div>
+                      {s.is_current ? (
+                        <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                          Session actuelle
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleRevokeSession(s.session_id)}
+                          className="rounded-full border border-red-500/30 px-3 py-1 text-red-300 hover:bg-red-500/15"
+                        >
+                          Révoquer
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <form onSubmit={handleDeleteAccount} className="rounded-2xl border border-red-500/25 bg-red-500/5 p-5 space-y-3">
               <p className="font-semibold text-red-300">Supprimer mon compte définitivement</p>

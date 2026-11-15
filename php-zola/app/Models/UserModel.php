@@ -84,6 +84,7 @@ final class UserModel
     public function discover(int $viewerId, array $filters): array
     {
         $sql = 'SELECT u.id, u.is_verified, u.is_online, p.full_name, p.birth_date, p.gender, p.country, p.country_code, p.city, p.avatar_url,
+                       EXISTS(SELECT 1 FROM profile_boosts pb WHERE pb.user_id = u.id AND pb.expires_at > NOW()) AS is_boosted,
                        (SELECT COUNT(*) FROM user_interests ui1
                         JOIN user_interests ui2 ON ui2.interest_id = ui1.interest_id
                         WHERE ui1.user_id = u.id AND ui2.user_id = :viewer_int) AS shared_interests
@@ -105,19 +106,36 @@ final class UserModel
             $sql .= ' AND p.country = :country';
             $params[':country'] = $filters['country'];
         }
+        if (!empty($filters['city'])) {
+            $sql .= ' AND p.city LIKE :city';
+            $params[':city'] = '%' . $filters['city'] . '%';
+        }
         if (!empty($filters['gender']) && $filters['gender'] !== 'Tous') {
             $sql .= ' AND p.gender = :gender';
             $params[':gender'] = $filters['gender'];
         }
+        if (!empty($filters['interestId'])) {
+            $sql .= ' AND EXISTS(SELECT 1 FROM user_interests ui WHERE ui.user_id = u.id AND ui.interest_id = :interest_id)';
+            $params[':interest_id'] = (int) $filters['interestId'];
+        }
+        if (!empty($filters['minAge'])) {
+            $sql .= ' AND TIMESTAMPDIFF(YEAR, p.birth_date, CURDATE()) >= :min_age';
+            $params[':min_age'] = max(18, (int) $filters['minAge']);
+        }
+        if (!empty($filters['maxAge'])) {
+            $sql .= ' AND TIMESTAMPDIFF(YEAR, p.birth_date, CURDATE()) <= :max_age';
+            $params[':max_age'] = min(100, (int) $filters['maxAge']);
+        }
 
         $limit = max(1, min(60, (int) ($filters['limit'] ?? 24)));
         $offset = max(0, (int) ($filters['offset'] ?? 0));
-        $sql .= " ORDER BY shared_interests DESC, u.is_online DESC, u.last_seen_at DESC LIMIT {$limit} OFFSET {$offset}";
+        $sql .= " ORDER BY is_boosted DESC, shared_interests DESC, u.is_online DESC, u.last_seen_at DESC LIMIT {$limit} OFFSET {$offset}";
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
         foreach ($rows as &$r) {
+            $r['is_boosted'] = (bool) $r['is_boosted'];
             $r['age'] = (new DateTimeImmutable($r['birth_date']))->diff(new DateTimeImmutable('today'))->y;
             $r['first_name'] = explode(' ', $r['full_name'])[0] ?? $r['full_name'];
             $r['compatibility_score'] = min(99, 55 + ((int) $r['shared_interests'] * 12) + ((int) $r['is_verified'] * 5));

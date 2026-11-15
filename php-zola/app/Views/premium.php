@@ -18,7 +18,7 @@
         <article class="zola-card <?= $plan['is_popular'] ? 'zola-popular' : '' ?>">
           <h3><?= Security::e($plan['name']) ?></h3>
           <p class="zola-price"><?= number_format((int) $plan['price_fcfa'], 0, ',', ' ') ?> FCFA</p>
-          <button type="button" class="zola-btn-primary" data-plan-id="<?= (int) $plan['id'] ?>">Souscrire maintenant</button>
+          <button type="button" class="zola-btn-primary" data-plan-id="<?= (int) $plan['id'] ?>">Payer avec SasPay</button>
         </article>
       <?php endforeach; ?>
     </div>

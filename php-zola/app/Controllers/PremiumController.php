@@ -22,7 +22,7 @@ final class PremiumController extends Controller
         $uid = Security::requireAuth();
         Security::verifyCsrf($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
         $planId = (int) ($_POST['plan_id'] ?? 0);
-        $provider = trim($_POST['provider'] ?? 'CinetPay');
+        $provider = 'SasPay · Mobile Money & Carte';
         $intent = (new SubscriptionModel($this->pdo))->createPaymentIntent($uid, $planId, $provider);
         $this->json(['payment_intent' => $intent], 201);
     }
@@ -37,5 +37,19 @@ final class PremiumController extends Controller
             (string) ($_POST['verification_token'] ?? '')
         );
         $this->json(['ok' => true]);
+    }
+
+    public function webhookSaspay(): void
+    {
+        $rawBody = file_get_contents('php://input') ?: '';
+        $ts = (string) ($_SERVER['HTTP_X_WEBHOOK_TIMESTAMP'] ?? '');
+        $sig = (string) ($_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? '');
+        $evt = (string) ($_SERVER['HTTP_X_WEBHOOK_EVENT'] ?? '');
+        try {
+            $status = (new SubscriptionModel($this->pdo))->handleSaspayWebhook($rawBody, $ts, $sig, $evt);
+            $this->json(['ok' => true, 'status' => $status]);
+        } catch (RuntimeException $e) {
+            $this->json(['error' => $e->getMessage()], 403);
+        }
     }
 }

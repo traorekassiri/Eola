@@ -17,6 +17,7 @@ import savannaImg from '../assets/images/zola_savanna_sunset_1794726545758.jpg';
 import womanPortraitImg from '../assets/images/zola_portrait_woman_2_1794726546703.jpg';
 import manPortraitImg from '../assets/images/zola_login_man_1794726545582.jpg';
 import type { AppRoute, SiteSettings, SubscriptionPlan } from '../types';
+import { PWAInstallButton } from './PWAControls';
 import { ZolaLogo } from './ZolaLogo';
 
 interface LandingPageProps {
@@ -98,6 +99,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </nav>
 
           <div className="flex items-center gap-3 shrink-0">
+            <PWAInstallButton compact />
             {isAuthenticated ? (
               <button
                 type="button"

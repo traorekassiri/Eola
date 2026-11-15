@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Eye, EyeOff, Lock, Mail, MapPin, User } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, Mail, MapPin, User } from 'lucide-react';
 import registerWomanImg from '../assets/images/zola_register_woman_1794726545235.jpg';
 import loginManImg from '../assets/images/zola_login_man_1794726545582.jpg';
 import { AFRICAN_COUNTRIES, apiFetch, setCsrfToken } from '../lib/api';
@@ -23,6 +23,8 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
+  const [twoFactorRequired, setTwoFactorRequired] = useState(false);
+  const [totpCode, setTotpCode] = useState('');
 
   // Register state
   const [fullName, setFullName] = useState('');
@@ -52,12 +54,28 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
     setError('');
     setLoading(true);
     try {
-      const data = await apiFetch<{ user: UserProfile; csrfToken: string }>('/api/auth/login', {
+      const data = await apiFetch<{
+        user?: UserProfile;
+        csrfToken?: string;
+        two_factor_required?: boolean;
+      }>('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email: loginEmail, password: loginPassword, remember_me: rememberMe }),
+        body: JSON.stringify({
+          email: loginEmail,
+          password: loginPassword,
+          remember_me: rememberMe,
+          totp_code: twoFactorRequired ? totpCode.trim() : undefined,
+        }),
       });
-      setCsrfToken(data.csrfToken);
-      onAuthSuccess(data.user);
+      if (data.two_factor_required) {
+        setTwoFactorRequired(true);
+        setInfoMsg('Entrez le code à 6 chiffres généré par votre application 2FA.');
+        return;
+      }
+      if (data.user && data.csrfToken) {
+        setCsrfToken(data.csrfToken);
+        onAuthSuccess(data.user);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur de connexion.');
     } finally {
@@ -198,64 +216,103 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                   </div>
                 )}
 
+                {infoMsg && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                    {infoMsg}
+                  </div>
+                )}
+
                 <form onSubmit={handleLogin} className="space-y-4">
-                  <div className="relative">
-                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
-                    <input
-                      type="email"
-                      required
-                      value={loginEmail}
-                      onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="Votre email"
-                      className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-4 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
-                    />
-                  </div>
+                  {!twoFactorRequired ? (
+                    <>
+                      <div className="relative">
+                        <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
+                        <input
+                          type="email"
+                          required
+                          value={loginEmail}
+                          onChange={(e) => setLoginEmail(e.target.value)}
+                          placeholder="Votre email"
+                          className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-4 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
+                        />
+                      </div>
 
-                  <div className="relative">
-                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
-                    <input
-                      type={showPass ? 'text' : 'password'}
-                      required
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="Mot de passe"
-                      className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-11 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPass((v) => !v)}
-                      aria-label={showPass ? 'Masquer' : 'Afficher'}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-white"
-                    >
-                      {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  </div>
+                      <div className="relative">
+                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
+                        <input
+                          type={showPass ? 'text' : 'password'}
+                          required
+                          value={loginPassword}
+                          onChange={(e) => setLoginPassword(e.target.value)}
+                          placeholder="Mot de passe"
+                          className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-11 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPass((v) => !v)}
+                          aria-label={showPass ? 'Masquer' : 'Afficher'}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-white"
+                        >
+                          {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
 
-                  <div className="flex items-center justify-between text-xs sm:text-sm">
-                    <label className="inline-flex items-center gap-2 text-stone-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={rememberMe}
-                        onChange={(e) => setRememberMe(e.target.checked)}
-                        className="h-4 w-4 rounded border-white/20 bg-white/5 accent-orange-500"
-                      />
-                      Se souvenir de moi
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('forgot-password')}
-                      className="font-medium text-amber-400 hover:text-amber-300"
-                    >
-                      Mot de passe oublié ?
-                    </button>
-                  </div>
+                      <div className="flex items-center justify-between text-xs sm:text-sm">
+                        <label className="inline-flex items-center gap-2 text-stone-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rememberMe}
+                            onChange={(e) => setRememberMe(e.target.checked)}
+                            className="h-4 w-4 rounded border-white/20 bg-white/5 accent-orange-500"
+                          />
+                          Se souvenir de moi
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('forgot-password')}
+                          className="font-medium text-amber-400 hover:text-amber-300"
+                        >
+                          Mot de passe oublié ?
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="relative">
+                        <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-amber-400" />
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]{6}"
+                          maxLength={6}
+                          required
+                          autoFocus
+                          value={totpCode}
+                          onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          placeholder="Code 2FA à 6 chiffres"
+                          className="w-full rounded-xl border border-amber-400/40 bg-white/5 pl-10 pr-4 py-3 text-sm tracking-widest font-mono text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTwoFactorRequired(false);
+                          setTotpCode('');
+                          setInfoMsg('');
+                        }}
+                        className="text-xs text-stone-400 hover:text-white underline"
+                      >
+                        Revenir aux identifiants
+                      </button>
+                    </div>
+                  )}
 
                   <button
                     type="submit"
                     disabled={loading}
                     className="zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-600/25 disabled:opacity-60"
                   >
-                    {loading ? 'Connexion...' : 'Se connecter'}
+                    {loading ? 'Connexion...' : twoFactorRequired ? 'Vérifier le code 2FA' : 'Se connecter'}
                   </button>
                 </form>
 

@@ -57,6 +57,34 @@ document.querySelectorAll('[data-like-id]').forEach((btn) => {
   });
 });
 
+// Boutons Favoris
+document.querySelectorAll('[data-favorite-id]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const id = btn.getAttribute('data-favorite-id');
+    try {
+      const res = await zolaFetch(`/api/favorites/${id}`, { method: 'POST' });
+      btn.textContent = res.is_favorite ? 'En favori' : 'Favori';
+      showToast(res.message || 'Favoris mis à jour.');
+    } catch (err) {
+      showToast(err.message);
+    }
+  });
+});
+
+// Boutons Bloquer un profil
+document.querySelectorAll('[data-block-id]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const id = btn.getAttribute('data-block-id');
+    try {
+      const res = await zolaFetch(`/api/users/${id}/block`, { method: 'POST' });
+      showToast(res.message || 'Profil bloqué.');
+      setTimeout(() => { window.location.href = '/discover'; }, 800);
+    } catch (err) {
+      showToast(err.message);
+    }
+  });
+});
+
 // Messagerie AJAX
 const threadEl = document.getElementById('zola-thread');
 const msgForm = document.getElementById('zola-msg-form');
@@ -69,7 +97,19 @@ if (threadEl) {
       (data.messages || []).forEach((m) => {
         const div = document.createElement('div');
         div.className = 'zola-bubble';
-        div.textContent = m.content || '';
+        if (m.image_url) {
+          const img = document.createElement('img');
+          img.src = m.image_url;
+          img.alt = 'Pièce jointe';
+          img.style.maxHeight = '200px';
+          img.style.borderRadius = '12px';
+          div.appendChild(img);
+        }
+        if (m.content) {
+          const p = document.createElement('p');
+          p.textContent = m.content;
+          div.appendChild(p);
+        }
         threadEl.appendChild(div);
       });
       threadEl.scrollTop = threadEl.scrollHeight;
@@ -93,23 +133,60 @@ if (threadEl) {
       }
     });
   }
+
+  document.querySelectorAll('[data-sticker]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const name = btn.getAttribute('data-sticker') || 'akoma';
+      const canvas = document.createElement('canvas');
+      canvas.width = 240;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = '#18100E';
+      ctx.fillRect(0, 0, 240, 240);
+      ctx.strokeStyle = '#F59E0B';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(12, 12, 216, 216);
+      ctx.fillStyle = '#FDE68A';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(name.toUpperCase(), 120, 128);
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        const fd = new FormData();
+        fd.append('content', '');
+        fd.append('image', new File([blob], `zola-sticker-${name}.png`, { type: 'image/png' }));
+        try {
+          await zolaFetch(`/api/messages/conversations/${convId}`, { method: 'POST', body: fd });
+          loadThread();
+        } catch (err) {
+          showToast(err.message);
+        }
+      }, 'image/png');
+    });
+  });
 }
 
-// Souscription Premium
+// Souscription Premium (SasPay)
 document.querySelectorAll('[data-plan-id]').forEach((btn) => {
   btn.addEventListener('click', async () => {
     const planId = btn.getAttribute('data-plan-id');
     try {
       const fd = new FormData();
       fd.append('plan_id', planId);
-      fd.append('provider', 'CinetPay');
+      fd.append('provider', 'SasPay · Mobile Money & Carte');
       const { payment_intent } = await zolaFetch('/api/premium/checkout', { method: 'POST', body: fd });
+
+      if (payment_intent.checkout_url) {
+        window.location.assign(payment_intent.checkout_url);
+        return;
+      }
 
       const vfd = new FormData();
       vfd.append('reference', payment_intent.reference);
       vfd.append('verification_token', payment_intent.verification_token);
       await zolaFetch('/api/premium/verify', { method: 'POST', body: vfd });
-      showToast('Abonnement Premium activé !');
+      showToast('Abonnement Premium activé via SasPay !');
       setTimeout(() => window.location.reload(), 900);
     } catch (err) {
       showToast(err.message);

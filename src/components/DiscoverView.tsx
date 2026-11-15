@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   BadgeCheck,
+  Bookmark,
   Crown,
   Heart,
   Lock,
@@ -8,6 +9,7 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  Star,
   X,
   Zap,
 } from 'lucide-react';
@@ -20,6 +22,7 @@ interface DiscoverViewProps {
   onViewProfile: (memberId: number) => void;
   onOpenChat: (conversationId: number) => void;
   onGoPremium: () => void;
+  onFavoritesChanged?: (count: number) => void;
 }
 
 export const DiscoverView: React.FC<DiscoverViewProps> = ({
@@ -28,6 +31,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   onViewProfile,
   onOpenChat,
   onGoPremium,
+  onFavoritesChanged,
 }) => {
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [total, setTotal] = useState(0);
@@ -54,6 +58,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     profiles: [],
   });
   const [boostMsg, setBoostMsg] = useState('');
+  const [likeError, setLikeError] = useState('');
 
   const [matchModal, setMatchModal] = useState<{
     partner: UserProfile;
@@ -107,21 +112,39 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     loadLikesMe();
   }, [loadProfiles, loadLikesMe]);
 
-  const handleLike = async (e: React.MouseEvent, target: UserProfile) => {
+  const handleLike = async (e: React.MouseEvent, target: UserProfile, isSuper = false) => {
     e.stopPropagation();
-    const res = await apiFetch<{
-      liked: boolean;
-      matched: boolean;
-      conversationId: number | null;
-      partner: UserProfile;
-    }>(`/api/likes/${target.id}`, { method: 'POST' });
+    setLikeError('');
+    try {
+      const res = await apiFetch<{
+        liked: boolean;
+        is_super?: boolean;
+        matched: boolean;
+        conversationId: number | null;
+        partner: UserProfile;
+      }>(`/api/likes/${target.id}`, {
+        method: 'POST',
+        body: JSON.stringify({ is_super: isSuper }),
+      });
 
-    setProfiles((prev) =>
-      prev.map((p) => (p.id === target.id ? { ...p, liked_by_me: true, is_match: res.matched } : p))
-    );
+      setProfiles((prev) =>
+        prev.map((p) =>
+          p.id === target.id
+            ? {
+                ...p,
+                liked_by_me: true,
+                is_super_liked: Boolean(res.is_super || p.is_super_liked),
+                is_match: res.matched,
+              }
+            : p
+        )
+      );
 
-    if (res.matched && res.conversationId) {
-      setMatchModal({ partner: res.partner, conversationId: res.conversationId });
+      if (res.matched && res.conversationId) {
+        setMatchModal({ partner: res.partner, conversationId: res.conversationId });
+      }
+    } catch (err) {
+      setLikeError(err instanceof Error ? err.message : "Impossible d'envoyer cette réaction.");
     }
   };
 
@@ -142,9 +165,28 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     try {
       const res = await apiFetch<{ message: string }>('/api/boost', { method: 'POST' });
       setBoostMsg(res.message);
+      loadProfiles(1, false);
       setTimeout(() => setBoostMsg(''), 3500);
     } catch {
       onGoPremium();
+    }
+  };
+
+  const handleToggleFavorite = async (e: React.MouseEvent, target: UserProfile) => {
+    e.stopPropagation();
+    try {
+      const res = await apiFetch<{ ok: boolean; is_favorite: boolean; count: number; message: string }>(
+        `/api/favorites/${target.id}`,
+        { method: 'POST' }
+      );
+      setProfiles((prev) =>
+        prev.map((p) => (p.id === target.id ? { ...p, is_favorite: res.is_favorite } : p))
+      );
+      onFavoritesChanged?.(res.count);
+      setBoostMsg(res.message);
+      setTimeout(() => setBoostMsg(''), 2500);
+    } catch (err) {
+      setLikeError(err instanceof Error ? err.message : 'Impossible de mettre à jour les favoris.');
     }
   };
 
@@ -206,6 +248,21 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
       {boostMsg && (
         <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
           {boostMsg}
+        </div>
+      )}
+
+      {likeError && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-xs sm:text-sm text-amber-200">
+          <span>{likeError}</span>
+          {!currentUser.is_premium && (
+            <button
+              type="button"
+              onClick={onGoPremium}
+              className="shrink-0 rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-stone-950"
+            >
+              Passer Premium
+            </button>
+          )}
         </div>
       )}
 
@@ -390,23 +447,44 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                   />
                   <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
 
-                  <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
-                    {p.is_online ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-emerald-300 backdrop-blur-sm">
-                        <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                        En ligne
-                      </span>
-                    ) : (
-                      <span />
-                    )}
-                    {p.is_verified && (
-                      <span
-                        title="Profil vérifié"
-                        className="flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-sky-400 backdrop-blur-sm"
+                  <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {p.is_online && (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-emerald-300 backdrop-blur-sm">
+                          <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                          En ligne
+                        </span>
+                      )}
+                      {p.is_boosted && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold text-stone-950 shadow">
+                          <Zap className="h-3 w-3 fill-stone-950" />
+                          Boosté
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {p.is_verified && (
+                        <span
+                          title="Profil vérifié"
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/55 text-sky-400 backdrop-blur-sm"
+                        >
+                          <BadgeCheck className="h-4 w-4" />
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleFavorite(e, p)}
+                        title={p.is_favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+                        aria-label={p.is_favorite ? `Retirer ${p.first_name} des favoris` : `Ajouter ${p.first_name} aux favoris`}
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full backdrop-blur-sm transition-colors ${
+                          p.is_favorite
+                            ? 'bg-amber-400 text-stone-950 shadow'
+                            : 'bg-black/55 text-stone-200 hover:bg-amber-400/90 hover:text-stone-950'
+                        }`}
                       >
-                        <BadgeCheck className="h-4 w-4" />
-                      </span>
-                    )}
+                        <Bookmark className={`h-3.5 w-3.5 ${p.is_favorite ? 'fill-current' : ''}`} />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2">
@@ -422,27 +500,44 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
 
                     <div className="flex items-center gap-1.5 shrink-0">
                       {!p.liked_by_me && (
-                        <button
-                          type="button"
-                          onClick={(e) => handlePass(e, p.id)}
-                          aria-label={`Passer ${p.first_name}`}
-                          title="Passer"
-                          className="flex h-9 w-9 items-center justify-center rounded-full bg-black/65 text-stone-300 border border-white/15 hover:border-white/40 hover:text-white"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={(e) => handlePass(e, p.id)}
+                            aria-label={`Passer ${p.first_name}`}
+                            title="Passer"
+                            className="flex h-9 w-9 items-center justify-center rounded-full bg-black/65 text-stone-300 border border-white/15 hover:border-white/40 hover:text-white"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleLike(e, p, true)}
+                            aria-label={`Coup de cœur ${p.first_name}`}
+                            title="Coup de cœur (Super-Like)"
+                            className="flex h-9 w-9 items-center justify-center rounded-full bg-black/65 text-amber-300 border border-amber-400/40 hover:bg-amber-400 hover:text-stone-950 transition-colors"
+                          >
+                            <Star className="h-4 w-4 fill-current" />
+                          </button>
+                        </>
                       )}
                       <button
                         type="button"
-                        onClick={(e) => handleLike(e, p)}
+                        onClick={(e) => handleLike(e, p, false)}
                         aria-label={`Aimer ${p.first_name}`}
                         className={`flex h-11 w-11 items-center justify-center rounded-full transition-all shadow-lg ${
-                          p.liked_by_me
-                            ? 'zola-gradient text-white shadow-orange-600/40'
-                            : 'bg-black/65 text-white border border-white/20 hover:border-orange-500 hover:bg-orange-600'
+                          p.is_super_liked
+                            ? 'bg-gradient-to-br from-amber-300 to-orange-500 text-stone-950 shadow-amber-500/40'
+                            : p.liked_by_me
+                              ? 'zola-gradient text-white shadow-orange-600/40'
+                              : 'bg-black/65 text-white border border-white/20 hover:border-orange-500 hover:bg-orange-600'
                         }`}
                       >
-                        <Heart className={`h-5 w-5 ${p.liked_by_me ? 'fill-white' : ''}`} />
+                        {p.is_super_liked ? (
+                          <Star className="h-5 w-5 fill-current" />
+                        ) : (
+                          <Heart className={`h-5 w-5 ${p.liked_by_me ? 'fill-white' : ''}`} />
+                        )}
                       </button>
                     </div>
                   </div>

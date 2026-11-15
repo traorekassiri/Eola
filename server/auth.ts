@@ -5,6 +5,7 @@ import { db } from './db.ts';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.createHash('sha256').update(process.cwd() + '_zola_secret_2026').digest('hex');
 
 export interface AuthSession {
+  sessionId: string;
   userId: number;
   role: string;
   csrfToken: string;
@@ -19,10 +20,23 @@ function signToken(payload: string): string {
   return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
 }
 
-export function createSessionCookie(userId: number, role: string, rememberMe = false): { cookieValue: string; csrfToken: string; maxAgeMs: number } {
+export function createSessionCookie(
+  userId: number,
+  role: string,
+  rememberMe = false,
+  userAgent = 'Navigateur Web',
+  ipAddress = '0.0.0.0'
+): { cookieValue: string; csrfToken: string; maxAgeMs: number; sessionId: string } {
   const maxAgeMs = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
   const csrfToken = crypto.randomBytes(24).toString('hex');
+  const sessionId = crypto.randomBytes(16).toString('hex');
+
+  db.prepare(
+    'INSERT INTO user_sessions (session_id, user_id, user_agent, ip_address) VALUES (?, ?, ?, ?)'
+  ).run(sessionId, userId, userAgent.slice(0, 180), ipAddress.slice(0, 64));
+
   const session: AuthSession = {
+    sessionId,
     userId,
     role,
     csrfToken,
@@ -30,7 +44,7 @@ export function createSessionCookie(userId: number, role: string, rememberMe = f
   };
   const encoded = Buffer.from(JSON.stringify(session)).toString('base64url');
   const sig = signToken(encoded);
-  return { cookieValue: `${encoded}.${sig}`, csrfToken, maxAgeMs };
+  return { cookieValue: `${encoded}.${sig}`, csrfToken, maxAgeMs, sessionId };
 }
 
 export function parseSessionCookie(cookieHeader: string | undefined): AuthSession | null {
@@ -54,6 +68,14 @@ export function parseSessionCookie(cookieHeader: string | undefined): AuthSessio
     if (!parsed.userId || !parsed.exp || parsed.exp < Date.now()) {
       return null;
     }
+    if (parsed.sessionId) {
+      const sessRow = db
+        .prepare('SELECT revoked FROM user_sessions WHERE session_id = ? AND user_id = ?')
+        .get(parsed.sessionId, parsed.userId) as { revoked: number } | undefined;
+      if (sessRow && sessRow.revoked === 1) {
+        return null;
+      }
+    }
     return parsed;
   } catch {
     return null;
@@ -69,6 +91,11 @@ export function attachAuth(req: AuthenticatedRequest, _res: Response, next: Next
     if (userRow && userRow.status === 'active') {
       req.auth = { ...session, role: userRow.role };
       db.prepare("UPDATE users SET last_seen_at = datetime('now'), is_online = 1 WHERE id = ?").run(userRow.id);
+      if (session.sessionId) {
+        db.prepare("UPDATE user_sessions SET last_active_at = datetime('now') WHERE session_id = ?").run(
+          session.sessionId
+        );
+      }
     }
   }
   next();

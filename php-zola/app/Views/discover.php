@@ -4,6 +4,7 @@
     <a href="/discover" class="zola-brand">ZOLA</a>
     <nav class="zola-links">
       <a href="/discover">Découvrir</a>
+      <a href="/favorites">Favoris</a>
       <a href="/messages">Messages</a>
       <a href="/profile">Mon profil</a>
       <a href="/premium">Premium</a>
@@ -26,6 +27,7 @@
         <div class="zola-actions">
           <a href="/profile/<?= (int) $p['id'] ?>" class="zola-btn-outline">Profil</a>
           <button type="button" class="zola-btn-primary" data-like-id="<?= (int) $p['id'] ?>">J'aime</button>
+          <button type="button" class="zola-btn-outline" data-favorite-id="<?= (int) $p['id'] ?>">Favori</button>
         </div>
       </article>
     <?php endforeach; ?>
