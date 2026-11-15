@@ -3,6 +3,7 @@ export interface CulturalSticker {
   label: string;
   origin: string;
   svg: string;
+  image_url?: string;
 }
 
 function wrapStickerSvg(inner: string, accentA: string, accentB: string, title: string): string {
@@ -167,12 +168,14 @@ export const AFRICAN_STICKERS: CulturalSticker[] = [
 ];
 
 export function getStickerDataUrl(sticker: CulturalSticker): string {
+  if (sticker.image_url) return sticker.image_url;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sticker.svg)}`;
 }
 
 export async function stickerToPngFile(sticker: CulturalSticker): Promise<File> {
   const url = getStickerDataUrl(sticker);
   const img = new Image();
+  img.crossOrigin = 'anonymous';
   img.width = 320;
   img.height = 320;
 

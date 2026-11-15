@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   BadgeCheck,
@@ -15,6 +15,7 @@ import {
   Star,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import type { ConversationSummary, UserProfile } from '../types';
 
 interface MemberProfileViewProps {
@@ -38,15 +39,18 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
   onBlocked,
   onFavoritesChanged,
 }) => {
+  const { t, tCountry, tZodiac, tInterest, tReportReason, reportReasons } = useI18n();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [activePhoto, setActivePhoto] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [reportOpen, setReportOpen] = useState(false);
-  const [reportReason, setReportReason] = useState('Profil suspect ou faux');
+  const [reportReason, setReportReason] = useState(reportReasons[0]?.fr || 'Profil suspect ou faux');
   const [reportDetails, setReportDetails] = useState('');
   const [blockOpen, setBlockOpen] = useState(false);
   const [blocking, setBlocking] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [photoSwipeX, setPhotoSwipeX] = useState(0);
+  const photoTouchRef = useRef<{ x: number; y: number; locked: boolean; cancelled: boolean } | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -55,8 +59,55 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
         setProfile(d.profile);
         setActivePhoto(d.profile.avatar_url);
       })
+      .catch(() => setProfile(null))
       .finally(() => setLoading(false));
   }, [memberId]);
+
+  const photoUrls = profile
+    ? profile.photos.length > 0
+      ? profile.photos.map((ph) => ph.photo_url)
+      : [profile.avatar_url]
+    : [];
+  const activeIdx = Math.max(0, photoUrls.indexOf(activePhoto || profile?.avatar_url || ''));
+
+  const handlePhotoTouchStart = (e: React.TouchEvent) => {
+    if (photoUrls.length <= 1 || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    photoTouchRef.current = { x: t.clientX, y: t.clientY, locked: false, cancelled: false };
+  };
+
+  const handlePhotoTouchMove = (e: React.TouchEvent) => {
+    const g = photoTouchRef.current;
+    const t = e.touches[0];
+    if (!g || g.cancelled || !t) return;
+    const dx = t.clientX - g.x;
+    const dy = t.clientY - g.y;
+    if (!g.locked) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) >= Math.abs(dx)) {
+        g.cancelled = true;
+        return;
+      }
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
+        g.locked = true;
+      } else {
+        return;
+      }
+    }
+    setPhotoSwipeX(Math.max(-90, Math.min(90, dx)));
+  };
+
+  const handlePhotoTouchEnd = () => {
+    const g = photoTouchRef.current;
+    photoTouchRef.current = null;
+    if (g?.locked && photoUrls.length > 1) {
+      if (photoSwipeX <= -45 && activeIdx < photoUrls.length - 1) {
+        setActivePhoto(photoUrls[activeIdx + 1]);
+      } else if (photoSwipeX >= 45 && activeIdx > 0) {
+        setActivePhoto(photoUrls[activeIdx - 1]);
+      }
+    }
+    setPhotoSwipeX(0);
+  };
 
   const handleLike = async (isSuper = false) => {
     if (!profile) return;
@@ -87,39 +138,49 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
       } else {
         setFeedback(
           isSuper
-            ? `Coup de cœur prioritaire envoyé à ${profile.first_name} !`
-            : `Vous avez envoyé un J'aime à ${profile.first_name}.`
+            ? t('member.superLikeSent', { name: profile.first_name })
+            : t('member.likeSent', { name: profile.first_name })
         );
       }
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : "Impossible d'envoyer cette réaction.");
+      setFeedback(err instanceof Error ? err.message : t('common.loading'));
     }
   };
 
   const handleStartMessage = async () => {
     if (!profile) return;
     if (profile.is_match) {
-      const convs = await apiFetch<{ conversations: Array<{ id: number; partner: { id: number } }> }>(
-        '/api/messages/conversations'
-      );
-      const found = convs.conversations.find((c) => c.partner.id === profile.id);
-      if (found) {
-        onOpenChat(found.id);
+      try {
+        const convs = await apiFetch<{ conversations: Array<{ id: number; partner: { id: number } }> }>(
+          '/api/messages/conversations'
+        );
+        const found = convs.conversations.find((c) => c.partner.id === profile.id);
+        if (found) {
+          onOpenChat(found.id);
+          return;
+        }
+      } catch (err) {
+        setFeedback(err instanceof Error ? err.message : 'Impossible d’ouvrir la conversation.');
         return;
       }
     }
-    setFeedback("Aimez ce profil : dès qu'il vous aime en retour, la discussion privée s'ouvre !");
+    setFeedback(t('member.matchFirstHint'));
   };
 
   const handleReport = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile) return;
-    const res = await apiFetch<{ message: string }>(`/api/users/${profile.id}/report`, {
-      method: 'POST',
-      body: JSON.stringify({ reason: reportReason, details: reportDetails }),
-    });
-    setReportOpen(false);
-    setFeedback(res.message);
+    try {
+      const res = await apiFetch<{ message: string }>(`/api/users/${profile.id}/report`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reportReason, details: reportDetails }),
+      });
+      setReportOpen(false);
+      setFeedback(res.message);
+    } catch (err) {
+      setReportOpen(false);
+      setFeedback(err instanceof Error ? err.message : 'Impossible d’envoyer le signalement.');
+    }
   };
 
   const handleBlock = async () => {
@@ -165,9 +226,9 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
   if (!profile) {
     return (
       <div className="zola-card rounded-3xl p-8 text-center space-y-3">
-        <p className="text-stone-300">Ce profil est introuvable ou inaccessible.</p>
+        <p className="text-stone-300">{t('member.notFound')}</p>
         <button type="button" onClick={onBack} className="text-orange-400 underline text-sm">
-          Retour
+          {t('common.back')}
         </button>
       </div>
     );
@@ -182,31 +243,59 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
       )}
 
       <div className="zola-card overflow-hidden rounded-3xl grid grid-cols-1 md:grid-cols-12">
-        {/* Photo & Gallery Column */}
-        <div className="md:col-span-6 relative bg-[#140F0E]">
+        {/* Photo & Gallery Column with Touch Swipe */}
+        <div
+          onTouchStart={handlePhotoTouchStart}
+          onTouchMove={handlePhotoTouchMove}
+          onTouchEnd={handlePhotoTouchEnd}
+          style={{ touchAction: 'pan-y' }}
+          className="md:col-span-6 relative bg-[#140F0E] overflow-hidden select-none"
+        >
           <img
             src={activePhoto || profile.avatar_url}
             alt={profile.full_name}
-            className="h-96 md:h-full w-full object-cover min-h-[380px]"
+            referrerPolicy="no-referrer"
+            style={{
+              transform: `translate3d(${photoSwipeX * 0.35}px, 0, 0)`,
+              transition: photoSwipeX === 0 ? 'transform 220ms cubic-bezier(0.16, 1, 0.3, 1)' : 'none',
+            }}
+            className="h-[420px] md:h-full w-full object-cover min-h-[380px] will-change-transform"
           />
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/30" />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/35" />
+
+          {photoUrls.length > 1 && (
+            <div className="absolute top-2.5 left-4 right-4 flex gap-1.5 z-10">
+              {photoUrls.map((url, idx) => (
+                <button
+                  key={url}
+                  type="button"
+                  aria-label={`Photo ${idx + 1}`}
+                  onClick={() => setActivePhoto(url)}
+                  className={`h-1 flex-1 rounded-full transition-colors ${
+                    idx === activeIdx ? 'bg-amber-400' : 'bg-white/30'
+                  }`}
+                />
+              ))}
+            </div>
+          )}
 
           <button
             type="button"
             onClick={onBack}
-            className="absolute top-4 left-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-md hover:bg-black/80"
+            aria-label={t('common.back')}
+            className="absolute top-6 left-4 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-md hover:bg-black/80 active:scale-90 transition-all"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
 
           {!isOwnProfile && (
-            <div className="absolute top-4 right-4 flex items-center gap-2">
+            <div className="absolute top-6 right-4 flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleToggleFavorite}
-                title={profile.is_favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
-                aria-label={profile.is_favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
-                className={`flex h-10 w-10 items-center justify-center rounded-full backdrop-blur-md transition-colors ${
+                title={profile.is_favorite ? t('discover.favRemove') : t('discover.favAdd')}
+                aria-label={profile.is_favorite ? t('discover.favRemove') : t('discover.favAdd')}
+                className={`flex h-11 w-11 items-center justify-center rounded-full backdrop-blur-md active:scale-90 transition-all ${
                   profile.is_favorite
                     ? 'bg-amber-400 text-stone-950 shadow-lg'
                     : 'bg-black/60 text-stone-200 hover:bg-amber-400/90 hover:text-stone-950'
@@ -217,17 +306,18 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
               <button
                 type="button"
                 onClick={() => setReportOpen(true)}
-                title="Signaler"
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-stone-200 backdrop-blur-md hover:bg-black/80"
+                title={t('member.report')}
+                aria-label={t('member.report')}
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-stone-200 backdrop-blur-md hover:bg-black/80 active:scale-90 transition-all"
               >
                 <Flag className="h-4 w-4" />
               </button>
               <button
                 type="button"
                 onClick={() => setBlockOpen(true)}
-                title="Bloquer ce profil"
-                aria-label="Bloquer ce profil"
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-red-300 backdrop-blur-md hover:bg-red-900/70"
+                title={t('member.block')}
+                aria-label={t('member.block')}
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-red-300 backdrop-blur-md hover:bg-red-900/70 active:scale-90 transition-all"
               >
                 <ShieldAlert className="h-4 w-4" />
               </button>
@@ -241,7 +331,7 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                   key={ph.id}
                   type="button"
                   onClick={() => setActivePhoto(ph.photo_url)}
-                  className={`h-14 w-14 shrink-0 overflow-hidden rounded-xl border-2 transition-all ${
+                  className={`h-14 w-14 shrink-0 overflow-hidden rounded-xl border-2 active:scale-95 transition-all ${
                     activePhoto === ph.photo_url ? 'border-orange-500 scale-105' : 'border-white/25 opacity-75'
                   }`}
                 >
@@ -264,14 +354,14 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 {profile.is_online && (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
                     <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                    En ligne
+                    {t('common.online')}
                   </span>
                 )}
               </div>
 
               <p className="mt-1.5 flex items-center gap-1.5 text-sm text-stone-300">
                 <MapPin className="h-4 w-4 text-orange-400" />
-                {profile.city}, {profile.country}
+                {profile.city}, {tCountry(profile.country)}
               </p>
             </div>
 
@@ -291,28 +381,28 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
               {profile.zodiac_sign && (
                 <span className="inline-flex items-center gap-1.5">
                   <Sparkles className="h-4 w-4 text-red-400" />
-                  Signe : {profile.zodiac_sign}
+                  {t('member.sign', { sign: tZodiac(profile.zodiac_sign) })}
                 </span>
               )}
             </div>
 
             <div>
-              <h2 className="font-display text-sm font-bold text-white mb-2">À propos de moi</h2>
+              <h2 className="font-display text-sm font-bold text-white mb-2">{t('member.aboutMe')}</h2>
               <p className="text-sm leading-relaxed text-stone-300">
-                {profile.bio || "Ce membre n'a pas encore rédigé de description personnelle."}
+                {profile.bio || t('member.noBio')}
               </p>
             </div>
 
             {profile.interests.length > 0 && (
               <div>
-                <h2 className="font-display text-sm font-bold text-white mb-2.5">Centres d'intérêt</h2>
+                <h2 className="font-display text-sm font-bold text-white mb-2.5">{t('member.interests')}</h2>
                 <div className="flex flex-wrap gap-2">
                   {profile.interests.map((i) => (
                     <span
                       key={i.id}
                       className="rounded-full border border-white/12 bg-white/5 px-3.5 py-1 text-xs font-medium text-stone-200"
                     >
-                      {i.name}
+                      {tInterest(i.name)}
                     </span>
                   ))}
                 </div>
@@ -324,9 +414,9 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
             <button
               type="button"
               onClick={onEditOwn}
-              className="zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-600/25"
+              className="min-h-[48px] zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-600/25 active:scale-[0.98] transition-transform"
             >
-              Modifier mon profil
+              {t('member.editOwn')}
             </button>
           ) : (
             <div className="space-y-3 pt-2">
@@ -334,32 +424,32 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 <button
                   type="button"
                   onClick={handleStartMessage}
-                  className="zola-gradient zola-gradient-hover flex-1 min-w-[160px] inline-flex items-center justify-center gap-2 rounded-full py-3 px-4 text-sm font-semibold text-white shadow-lg shadow-orange-600/25"
+                  className="min-h-[48px] zola-gradient zola-gradient-hover flex-1 min-w-[160px] inline-flex items-center justify-center gap-2 rounded-full py-3 px-4 text-sm font-semibold text-white shadow-lg shadow-orange-600/25 active:scale-[0.98] transition-transform"
                 >
                   <MessageCircle className="h-4 w-4" />
-                  Envoyer un message
+                  {t('member.sendMessage')}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleLike(false)}
-                  className={`inline-flex items-center justify-center gap-2 rounded-full border py-3 px-5 text-sm font-semibold transition-colors ${
+                  className={`min-h-[48px] inline-flex items-center justify-center gap-2 rounded-full border py-3 px-5 text-sm font-semibold active:scale-95 transition-all ${
                     profile.liked_by_me
                       ? 'border-red-500/40 bg-red-500/15 text-red-300'
                       : 'border-white/15 bg-white/5 text-white hover:bg-white/10'
                   }`}
                 >
                   <Heart className={`h-4 w-4 ${profile.liked_by_me ? 'fill-red-500 text-red-500' : 'text-red-400'}`} />
-                  {profile.liked_by_me ? 'Aimé' : "J'aime"}
+                  {profile.liked_by_me ? t('member.liked') : t('member.like')}
                 </button>
                 {!profile.liked_by_me && (
                   <button
                     type="button"
                     onClick={() => handleLike(true)}
-                    title="Coup de cœur prioritaire"
-                    className="inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-400/15 py-3 px-4 text-sm font-semibold text-amber-300 hover:bg-amber-400 hover:text-stone-950 transition-colors"
+                    title={t('member.superLikeTitle')}
+                    className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-400/15 py-3 px-4 text-sm font-semibold text-amber-300 hover:bg-amber-400 hover:text-stone-950 active:scale-95 transition-all"
                   >
                     <Star className="h-4 w-4 fill-current" />
-                    Coup de cœur
+                    {t('member.superLike')}
                   </button>
                 )}
               </div>
@@ -368,29 +458,29 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 <button
                   type="button"
                   onClick={handleToggleFavorite}
-                  className={`inline-flex items-center gap-1.5 font-medium transition-colors ${
+                  className={`min-h-[40px] inline-flex items-center gap-1.5 font-medium transition-colors ${
                     profile.is_favorite ? 'text-amber-300' : 'text-stone-300 hover:text-amber-300'
                   }`}
                 >
                   <Bookmark className={`h-3.5 w-3.5 ${profile.is_favorite ? 'fill-current' : ''}`} />
-                  {profile.is_favorite ? 'Dans mes favoris' : 'Sauvegarder en favori'}
+                  {profile.is_favorite ? t('member.inFavorites') : t('member.saveFavorite')}
                 </button>
                 <div className="flex items-center gap-4">
                   <button
                     type="button"
                     onClick={() => setReportOpen(true)}
-                    className="inline-flex items-center gap-1.5 text-stone-400 hover:text-stone-200 transition-colors"
+                    className="min-h-[40px] inline-flex items-center gap-1.5 text-stone-400 hover:text-stone-200 transition-colors"
                   >
                     <Flag className="h-3.5 w-3.5" />
-                    Signaler
+                    {t('member.report')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setBlockOpen(true)}
-                    className="inline-flex items-center gap-1.5 text-red-400 hover:text-red-300 font-medium transition-colors"
+                    className="min-h-[40px] inline-flex items-center gap-1.5 text-red-400 hover:text-red-300 font-medium transition-colors"
                   >
                     <Ban className="h-3.5 w-3.5" />
-                    Bloquer ce profil
+                    {t('member.block')}
                   </button>
                 </div>
               </div>
@@ -403,27 +493,30 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
       {reportOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <form onSubmit={handleReport} className="zola-card w-full max-w-md rounded-2xl p-6 space-y-4">
-            <h3 className="font-display text-lg font-bold text-white">Signaler {profile.first_name}</h3>
+            <h3 className="font-display text-lg font-bold text-white">
+              {t('member.reportModalTitle', { name: profile.first_name })}
+            </h3>
             <div>
-              <label className="block text-xs text-stone-400 mb-1">Motif</label>
+              <label className="block text-xs text-stone-400 mb-1">{t('member.reportReason')}</label>
               <select
                 value={reportReason}
                 onChange={(e) => setReportReason(e.target.value)}
                 className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3 py-2 text-sm text-white"
               >
-                <option value="Profil suspect ou faux">Profil suspect ou faux</option>
-                <option value="Comportement inapproprié">Comportement inapproprié</option>
-                <option value="Contenu offensant">Contenu offensant</option>
-                <option value="Harcèlement ou arnaque">Harcèlement ou arnaque</option>
+                {reportReasons.map((r) => (
+                  <option key={r.fr} value={r.fr}>
+                    {tReportReason(r.fr)}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
-              <label className="block text-xs text-stone-400 mb-1">Précisions</label>
+              <label className="block text-xs text-stone-400 mb-1">{t('member.reportDetails')}</label>
               <textarea
                 rows={3}
                 value={reportDetails}
                 onChange={(e) => setReportDetails(e.target.value)}
-                placeholder="Décrivez brièvement la situation..."
+                placeholder={t('member.reportPlaceholder')}
                 className="w-full rounded-xl border border-white/12 bg-white/5 px-3 py-2 text-sm text-white"
               />
             </div>
@@ -433,10 +526,10 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 onClick={() => setReportOpen(false)}
                 className="rounded-full border border-white/15 px-4 py-2 text-sm text-stone-300"
               >
-                Annuler
+                {t('common.cancel')}
               </button>
               <button type="submit" className="zola-gradient rounded-full px-5 py-2 text-sm font-semibold text-white">
-                Envoyer le signalement
+                {t('member.reportSubmit')}
               </button>
             </div>
           </form>
@@ -451,12 +544,14 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div>
-                <h3 className="font-display text-lg font-bold text-white">Bloquer {profile.first_name} ?</h3>
-                <p className="text-xs text-stone-400">Action immédiate et sécurisée</p>
+                <h3 className="font-display text-lg font-bold text-white">
+                  {t('member.blockModalTitle', { name: profile.first_name })}
+                </h3>
+                <p className="text-xs text-stone-400">{t('member.blockModalSub')}</p>
               </div>
             </div>
             <p className="text-sm leading-relaxed text-stone-300">
-              {profile.first_name} ne pourra plus voir votre profil ni vous envoyer de messages. Tout match et toute conversation en cours avec ce profil seront immédiatement supprimés.
+              {t('member.blockModalDesc', { name: profile.first_name })}
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -465,7 +560,7 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 onClick={() => setBlockOpen(false)}
                 className="rounded-full border border-white/15 px-4 py-2 text-sm text-stone-300 hover:bg-white/5 disabled:opacity-50"
               >
-                Annuler
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -473,7 +568,7 @@ export const MemberProfileView: React.FC<MemberProfileViewProps> = ({
                 onClick={handleBlock}
                 className="rounded-full bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
               >
-                {blocking ? 'Blocage...' : 'Confirmer le blocage'}
+                {blocking ? t('member.blocking') : t('member.blockConfirm')}
               </button>
             </div>
           </div>

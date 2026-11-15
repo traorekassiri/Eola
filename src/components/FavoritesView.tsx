@@ -11,6 +11,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import type { UserProfile } from '../types';
 
 interface FavoritesViewProps {
@@ -28,6 +29,7 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
   onFavoritesChanged,
   onMatched,
 }) => {
+  const { t } = useI18n();
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -39,6 +41,8 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
       const data = await apiFetch<{ profiles: UserProfile[]; count: number }>('/api/favorites');
       setProfiles(data.profiles);
       onFavoritesChanged(data.count);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Impossible de charger les favoris.');
     } finally {
       setLoading(false);
     }
@@ -57,10 +61,10 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
       );
       setProfiles((prev) => prev.filter((p) => p.id !== target.id));
       onFavoritesChanged(res.count);
-      setFeedback(`${target.first_name} a été retiré de vos favoris.`);
+      setFeedback(t('fav.removedMsg', { name: target.first_name }));
       setTimeout(() => setFeedback(''), 3000);
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : 'Impossible de retirer ce profil.');
+      setFeedback(err instanceof Error ? err.message : t('common.back'));
     }
   };
 
@@ -102,11 +106,11 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
       if (res.matched && res.conversationId) {
         onMatched(res.partner, res.conversationId);
       } else {
-        setFeedback(`J'aime envoyé à ${target.first_name}.`);
+        setFeedback(t('fav.likedMsg', { name: target.first_name }));
         setTimeout(() => setFeedback(''), 3000);
       }
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : "Impossible d'envoyer un J'aime.");
+      setFeedback(err instanceof Error ? err.message : t('fav.sendLike'));
     }
   };
 
@@ -122,10 +126,12 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-white flex items-center gap-2.5">
             <Bookmark className="h-7 w-7 text-amber-400 fill-amber-400/25" />
-            Mes Favoris
+            {t('fav.title')}
           </h1>
           <p className="text-sm text-stone-400 tabular-nums">
-            {profiles.length} profil{profiles.length > 1 ? 's' : ''} sauvegardé{profiles.length > 1 ? 's' : ''} pour plus tard.
+            {profiles.length > 1
+              ? t('fav.savedPlural', { count: profiles.length })
+              : t('fav.savedSingular', { count: profiles.length })}
           </p>
         </div>
 
@@ -135,7 +141,7 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
           className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs sm:text-sm font-medium text-stone-200 hover:bg-white/10"
         >
           <Compass className="h-4 w-4 text-orange-400" />
-          Découvrir d'autres profils
+          {t('fav.browseDiscover')}
         </button>
       </div>
 
@@ -153,7 +159,7 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filtrer vos favoris par prénom, ville ou pays..."
+              placeholder={t('fav.searchPlaceholder')}
               className="w-full rounded-xl border border-white/10 bg-white/5 pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
             />
           </div>
@@ -161,44 +167,45 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
       )}
 
       {loading ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {[1, 2, 3, 4].map((n) => (
-            <div key={n} className="h-80 rounded-3xl bg-white/5 animate-pulse border border-white/8" />
+            <div key={n} className="h-[360px] sm:h-80 rounded-3xl bg-white/5 animate-pulse border border-white/8" />
           ))}
         </div>
       ) : profiles.length === 0 ? (
-        <div className="zola-card rounded-3xl p-10 text-center space-y-4">
+        <div className="zola-card rounded-3xl p-8 sm:p-10 text-center space-y-4">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-400/15 text-amber-300">
             <Bookmark className="h-7 w-7" />
           </div>
-          <h2 className="font-display text-xl font-bold text-white">Aucun profil en favori</h2>
+          <h2 className="font-display text-xl font-bold text-white">{t('fav.empty.title')}</h2>
           <p className="mx-auto max-w-md text-sm text-stone-400">
-            Enregistrez des profils qui attirent votre attention depuis l'espace Découvrir ou depuis leur fiche membre pour les retrouver rapidement ici.
+            {t('fav.empty.desc')}
           </p>
           <button
             type="button"
             onClick={onBrowseDiscover}
-            className="zola-gradient zola-gradient-hover inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold text-white"
+            className="min-h-[44px] zola-gradient zola-gradient-hover inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold text-white active:scale-95 transition-transform"
           >
             <Sparkles className="h-4 w-4" />
-            Explorer les profils
+            {t('fav.empty.cta')}
           </button>
         </div>
       ) : filtered.length === 0 ? (
         <div className="zola-card rounded-3xl p-8 text-center text-sm text-stone-400">
-          Aucun favori ne correspond à « {search} ».
+          {t('fav.noMatch', { query: search })}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((p) => (
             <article
               key={p.id}
               onClick={() => onViewProfile(p.id)}
-              className="group relative h-80 cursor-pointer overflow-hidden rounded-3xl border border-white/10 bg-[#140F0E] transition-transform hover:-translate-y-1"
+              className="group relative h-[360px] sm:h-80 cursor-pointer select-none overflow-hidden rounded-3xl border border-white/10 bg-[#140F0E] transition-transform duration-200 active:scale-[0.985] sm:hover:-translate-y-1"
             >
               <img
                 src={p.avatar_url}
                 alt={p.full_name}
+                referrerPolicy="no-referrer"
                 className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
               />
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
@@ -208,13 +215,13 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
                   {p.is_online && (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-emerald-300 backdrop-blur-sm">
                       <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                      En ligne
+                      {t('common.online')}
                     </span>
                   )}
                   {p.is_verified && (
                     <span
-                      title="Profil vérifié"
-                      className="flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-sky-400 backdrop-blur-sm"
+                      title={t('common.verified')}
+                      className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-sky-400 backdrop-blur-sm"
                     >
                       <BadgeCheck className="h-4 w-4" />
                     </span>
@@ -224,17 +231,17 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
                 <button
                   type="button"
                   onClick={(e) => handleRemoveFavorite(e, p)}
-                  title="Retirer des favoris"
-                  aria-label={`Retirer ${p.first_name} des favoris`}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-400/90 text-stone-950 shadow hover:bg-red-500 hover:text-white transition-colors"
+                  title={t('discover.favRemove')}
+                  aria-label={t('discover.favRemove')}
+                  className="flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center rounded-full bg-amber-400/90 text-stone-950 shadow hover:bg-red-500 hover:text-white active:scale-90 transition-all"
                 >
                   <BookmarkX className="h-4 w-4" />
                 </button>
               </div>
 
-              <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2">
+              <div className="absolute bottom-3.5 left-3.5 right-3.5 flex items-end justify-between gap-2">
                 <div className="min-w-0">
-                  <h2 className="font-display text-lg font-bold text-white truncate">
+                  <h2 className="font-display text-xl sm:text-lg font-bold text-white truncate">
                     {p.first_name}, <span className="tabular-nums">{p.age}</span>
                   </h2>
                   <p className="flex items-center gap-1 text-xs text-stone-300 truncate">
@@ -246,9 +253,9 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
                 <button
                   type="button"
                   onClick={(e) => handleLikeOrMessage(e, p)}
-                  title={p.is_match ? 'Envoyer un message' : p.liked_by_me ? 'Déjà aimé' : "Envoyer un J'aime"}
-                  aria-label={p.is_match ? `Écrire à ${p.first_name}` : `Aimer ${p.first_name}`}
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all shadow-lg ${
+                  title={p.is_match ? t('fav.sendMessage') : p.liked_by_me ? t('fav.alreadyLiked') : t('fav.sendLike')}
+                  aria-label={p.is_match ? t('fav.sendMessage') : t('fav.sendLike')}
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-all active:scale-90 shadow-lg ${
                     p.is_match || p.liked_by_me
                       ? 'zola-gradient text-white shadow-orange-600/40'
                       : 'bg-black/65 text-white border border-white/20 hover:border-orange-500 hover:bg-orange-600'

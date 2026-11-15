@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { BarChart3 } from 'lucide-react';
+import { useI18n } from '../lib/i18n';
 import type { MonthlySignupPoint } from '../types';
 
 interface MonthlySignupsChartProps {
@@ -14,6 +15,7 @@ export const MonthlySignupsChart: React.FC<MonthlySignupsChartProps> = ({
   monthsWindow,
   onChangeWindow,
 }) => {
+  const { t, lang } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [width, setWidth] = useState(680);
@@ -165,11 +167,11 @@ export const MonthlySignupsChart: React.FC<MonthlySignupsChartProps> = ({
           <div className="flex items-center gap-2">
             <BarChart3 className="h-5 w-5 text-orange-400" />
             <h2 className="font-display text-lg font-bold text-white">
-              Évolution des inscriptions par mois
+              {t('admin.chart.signupsTitle')}
             </h2>
           </div>
           <p className="text-xs text-stone-400 mt-0.5 tabular-nums">
-            {totalWindow} inscription(s) enregistrée(s) sur les {monthsWindow} derniers mois
+            {t('admin.chart.signupsSub', { total: totalWindow, months: monthsWindow })}
           </p>
         </div>
 
@@ -181,7 +183,7 @@ export const MonthlySignupsChart: React.FC<MonthlySignupsChartProps> = ({
               monthsWindow === 6 ? 'zola-gradient text-white' : 'text-stone-300 hover:text-white'
             }`}
           >
-            6 mois
+            {t('admin.chart.months6')}
           </button>
           <button
             type="button"
@@ -190,13 +192,13 @@ export const MonthlySignupsChart: React.FC<MonthlySignupsChartProps> = ({
               monthsWindow === 12 ? 'zola-gradient text-white' : 'text-stone-300 hover:text-white'
             }`}
           >
-            12 mois
+            {t('admin.chart.months12')}
           </button>
         </div>
       </div>
 
       <div ref={containerRef} className="relative w-full overflow-hidden">
-        <svg ref={svgRef} className="block w-full select-none" role="img" aria-label="Graphique des inscriptions par mois" />
+        <svg ref={svgRef} className="block w-full select-none" role="img" aria-label={t('admin.chart.signupsTitle')} />
         {hovered && (
           <div
             className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-xl border border-orange-500/40 bg-[#181210]/95 px-3 py-1.5 text-xs shadow-lg"
@@ -204,7 +206,14 @@ export const MonthlySignupsChart: React.FC<MonthlySignupsChartProps> = ({
           >
             <p className="font-semibold text-white">{hovered.point.label}</p>
             <p className="text-amber-300 tabular-nums">
-              {hovered.point.count} inscription{hovered.point.count > 1 ? 's' : ''}
+              {hovered.point.count}{' '}
+              {lang === 'en'
+                ? hovered.point.count === 1
+                  ? 'signup'
+                  : 'signups'
+                : hovered.point.count > 1
+                  ? 'inscriptions'
+                  : 'inscription'}
             </p>
           </div>
         )}
@@ -214,6 +223,7 @@ export const MonthlySignupsChart: React.FC<MonthlySignupsChartProps> = ({
 };
 
 export const MonthlyRevenueChart: React.FC<{ data: MonthlySignupPoint[] }> = ({ data }) => {
+  const { t, locale } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [width, setWidth] = useState(480);
@@ -291,13 +301,13 @@ export const MonthlyRevenueChart: React.FC<{ data: MonthlySignupPoint[] }> = ({ 
   return (
     <section className="zola-card rounded-2xl p-5 space-y-3">
       <div>
-        <h2 className="font-display text-base font-bold text-white">Revenus Premium mensuels (FCFA)</h2>
+        <h2 className="font-display text-base font-bold text-white">{t('admin.chart.revenueTitle')}</h2>
         <p className="text-xs text-amber-300 tabular-nums mt-0.5">
-          {totalRev.toLocaleString('fr-FR')} FCFA sur la période
+          {t('admin.chart.revenueSub', { total: totalRev.toLocaleString(locale) })}
         </p>
       </div>
       <div ref={containerRef} className="w-full overflow-hidden">
-        <svg ref={svgRef} className="block w-full select-none" role="img" aria-label="Revenus mensuels FCFA" />
+        <svg ref={svgRef} className="block w-full select-none" role="img" aria-label={t('admin.chart.revenueTitle')} />
       </div>
     </section>
   );
@@ -306,6 +316,7 @@ export const MonthlyRevenueChart: React.FC<{ data: MonthlySignupPoint[] }> = ({ 
 export const CountryDistributionChart: React.FC<{
   data: Array<{ country: string; count: number }>;
 }> = ({ data }) => {
+  const { t, tCountry } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [width, setWidth] = useState(480);
@@ -324,7 +335,8 @@ export const CountryDistributionChart: React.FC<{
     const svgEl = svgRef.current;
     if (!svgEl || data.length === 0) return;
 
-    const height = Math.max(180, data.length * 30 + 24);
+    const translatedData = data.map((d) => ({ ...d, label: tCountry(d.country) }));
+    const height = Math.max(180, translatedData.length * 30 + 24);
     const margin = { top: 8, right: 32, bottom: 16, left: 112 };
     const innerWidth = Math.max(80, width - margin.left - margin.right);
     const innerHeight = height - margin.top - margin.bottom;
@@ -334,11 +346,11 @@ export const CountryDistributionChart: React.FC<{
     svg.attr('viewBox', `0 0 ${width} ${height}`).attr('width', width).attr('height', height);
 
     const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
-    const maxVal = Math.max(1, d3.max(data, (d) => d.count) ?? 1);
+    const maxVal = Math.max(1, d3.max(translatedData, (d) => d.count) ?? 1);
 
     const y = d3
       .scaleBand<string>()
-      .domain(data.map((d) => d.country))
+      .domain(translatedData.map((d) => d.label))
       .range([0, innerHeight])
       .padding(0.28);
 
@@ -353,36 +365,36 @@ export const CountryDistributionChart: React.FC<{
       });
 
     g.selectAll('rect.zola-country-bar')
-      .data(data)
+      .data(translatedData)
       .enter()
       .append('rect')
       .attr('x', 0)
-      .attr('y', (d) => y(d.country) ?? 0)
+      .attr('y', (d) => y(d.label) ?? 0)
       .attr('height', y.bandwidth())
       .attr('width', (d) => Math.max(4, x(d.count)))
       .attr('rx', 5)
       .attr('fill', '#ff6b1a');
 
     g.selectAll('text.zola-country-val')
-      .data(data)
+      .data(translatedData)
       .enter()
       .append('text')
       .attr('x', (d) => Math.max(4, x(d.count)) + 6)
-      .attr('y', (d) => (y(d.country) ?? 0) + y.bandwidth() / 2 + 4)
+      .attr('y', (d) => (y(d.label) ?? 0) + y.bandwidth() / 2 + 4)
       .attr('fill', '#fbbf24')
       .attr('font-size', '11px')
       .attr('font-weight', '600')
       .text((d) => String(d.count));
-  }, [data, width]);
+  }, [data, width, tCountry]);
 
   return (
     <section className="zola-card rounded-2xl p-5 space-y-3">
       <div>
-        <h2 className="font-display text-base font-bold text-white">Répartition géographique par pays</h2>
-        <p className="text-xs text-stone-400 mt-0.5">Top pays actifs de la communauté ZOLA</p>
+        <h2 className="font-display text-base font-bold text-white">{t('admin.chart.countryTitle')}</h2>
+        <p className="text-xs text-stone-400 mt-0.5">{t('admin.chart.countrySub')}</p>
       </div>
       <div ref={containerRef} className="w-full overflow-hidden">
-        <svg ref={svgRef} className="block w-full select-none" role="img" aria-label="Répartition par pays" />
+        <svg ref={svgRef} className="block w-full select-none" role="img" aria-label={t('admin.chart.countryTitle')} />
       </div>
     </section>
   );

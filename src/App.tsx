@@ -15,38 +15,39 @@ import {
   NotificationsView,
   SettingsView,
 } from './components/ProfileAndSettings';
+import { LanguageToggle } from './components/LanguageToggle';
 import { ZolaLogo } from './components/ZolaLogo';
-import { apiFetch, setCsrfToken } from './lib/api';
+import { apiFetch, getSessionToken, setCsrfToken, setSessionToken } from './lib/api';
+import { DEFAULT_SITE_SETTINGS } from './lib/cms';
+import { useI18n } from './lib/i18n';
 import type {
   AppRoute,
   Interest,
   MessageItem,
   NotificationItem,
+  PublicProfilePreview,
+  RegisterPrefill,
   SiteSettings,
   SubscriptionPlan,
   UserProfile,
 } from './types';
 
-const DEFAULT_SETTINGS: SiteSettings = {
-  hero_title: "Trouvez l'amour en Afrique",
-  hero_subtitle: "Rencontrez des célibataires authentiques, près de chez vous ou partout en Afrique.",
-  hero_cta_primary: 'Créer un compte',
-  hero_cta_secondary: 'En savoir plus',
-  footer_slogan: "Ensemble, trouvons l'amour",
-  oauth_google_enabled: '0',
-  oauth_facebook_enabled: '0',
-  oauth_apple_enabled: '0',
-  payment_provider_label: 'Paiement sécurisé',
-};
+const isAdminRole = (role?: string | null) =>
+  role === 'moderator' || role === 'admin' || role === 'super_admin';
 
 export default function App() {
+  const { lang, t, setCmsSettings } = useI18n();
   const [route, setRoute] = useState<AppRoute>('landing');
   const [booting, setBooting] = useState(true);
   const [user, setUser] = useState<UserProfile | null>(null);
 
   const [activeMembers, setActiveMembers] = useState(0);
   const [verifiedMembers, setVerifiedMembers] = useState(0);
-  const [settings, setSettings] = useState<SiteSettings>(DEFAULT_SETTINGS);
+  const [totalMatches, setTotalMatches] = useState(0);
+  const [countriesCount, setCountriesCount] = useState(0);
+  const [previewProfiles, setPreviewProfiles] = useState<PublicProfilePreview[]>([]);
+  const [registerPrefill, setRegisterPrefill] = useState<RegisterPrefill | null>(null);
+  const [settings, setSettings] = useState<SiteSettings>(DEFAULT_SITE_SETTINGS);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [interests, setInterests] = useState<Interest[]>([]);
 
@@ -67,19 +68,31 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
 
   const loadLanding = useCallback(async () => {
-    const data = await apiFetch<{
-      active_members: number;
-      verified_members: number;
-      settings: SiteSettings;
-      plans: SubscriptionPlan[];
-      interests: Interest[];
-    }>('/api/public/landing');
-    setActiveMembers(data.active_members);
-    setVerifiedMembers(data.verified_members);
-    setSettings({ ...DEFAULT_SETTINGS, ...data.settings });
-    setPlans(data.plans);
-    setInterests(data.interests);
-  }, []);
+    try {
+      const data = await apiFetch<{
+        active_members: number;
+        verified_members: number;
+        total_matches?: number;
+        countries_count?: number;
+        preview_profiles?: PublicProfilePreview[];
+        settings: SiteSettings;
+        plans: SubscriptionPlan[];
+        interests: Interest[];
+      }>('/api/public/landing');
+      setActiveMembers(data.active_members);
+      setVerifiedMembers(data.verified_members);
+      setTotalMatches(data.total_matches ?? 0);
+      setCountriesCount(data.countries_count ?? 0);
+      setPreviewProfiles(data.preview_profiles ?? []);
+      const merged: SiteSettings = { ...DEFAULT_SITE_SETTINGS, ...data.settings };
+      setSettings(merged);
+      setCmsSettings(merged);
+      setPlans(data.plans);
+      setInterests(data.interests);
+    } catch {
+      // Keep default CMS fallback settings if initial public fetch temporarily fails
+    }
+  }, [setCmsSettings]);
 
   const loadNotificationsAndUnread = useCallback(async () => {
     try {
@@ -103,12 +116,17 @@ export default function App() {
       apiFetch<{ user: UserProfile | null; csrfToken: string | null }>('/api/auth/me')
         .then((res) => {
           setCsrfToken(res.csrfToken);
+          if (!res.user) setSessionToken(null);
           setUser(res.user);
           if (res.user && new URLSearchParams(window.location.search).has('saspay_ref')) {
             setRoute('premium');
           }
         })
-        .catch(() => setUser(null)),
+        .catch(() => {
+          setCsrfToken(null);
+          setSessionToken(null);
+          setUser(null);
+        }),
     ]).finally(() => setBooting(false));
   }, [loadLanding]);
 
@@ -117,7 +135,11 @@ export default function App() {
     loadNotificationsAndUnread();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const wsToken = getSessionToken();
+    const wsUrl = wsToken
+      ? `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(wsToken)}`
+      : `${protocol}//${window.location.host}/ws`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onmessage = (ev) => {
@@ -194,13 +216,22 @@ export default function App() {
       setRoute('login');
       return;
     }
+    if (next === 'admin' && !isAdminRole(user?.role)) {
+      setRoute('discover');
+      return;
+    }
     setRoute(next);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleLogout = async () => {
-    await apiFetch('/api/auth/logout', { method: 'POST' });
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Clear local session even if server request fails
+    }
     setCsrfToken(null);
+    setSessionToken(null);
     setUser(null);
     setNotifications([]);
     setUnreadMessages(0);
@@ -210,8 +241,12 @@ export default function App() {
   };
 
   const handleMarkNotificationsRead = async () => {
-    await apiFetch('/api/notifications/read', { method: 'POST' });
-    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    try {
+      await apiFetch('/api/notifications/read', { method: 'POST' });
+      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    } catch {
+      // Ignore transient notification read error
+    }
   };
 
   if (booting) {
@@ -230,10 +265,18 @@ export default function App() {
         <LandingPage
           activeMembers={activeMembers}
           verifiedMembers={verifiedMembers}
+          totalMatches={totalMatches}
+          countriesCount={countriesCount}
+          previewProfiles={previewProfiles}
           settings={settings}
           plans={plans}
           onNavigate={handleNavigate}
+          onStartRegister={(prefill) => {
+            setRegisterPrefill(prefill);
+            handleNavigate(user ? (isAdminRole(user.role) ? 'admin' : 'discover') : 'register');
+          }}
           isAuthenticated={Boolean(user)}
+          isAdmin={isAdminRole(user?.role)}
         />
         <OfflineIndicator />
       </>
@@ -244,24 +287,27 @@ export default function App() {
     return (
       <div className="min-h-screen bg-[#0B0909] text-stone-200 px-4 py-10 sm:px-8">
         <div className="mx-auto max-w-3xl space-y-6">
-          <button
-            type="button"
-            onClick={() => setRoute(user ? 'discover' : 'landing')}
-            className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs text-stone-300 hover:bg-white/10"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Retour
-          </button>
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setRoute(user ? (isAdminRole(user.role) ? 'admin' : 'discover') : 'landing')}
+              className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs text-stone-300 hover:bg-white/10"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {t('common.back')}
+            </button>
+            <LanguageToggle compact />
+          </div>
           <div className="zola-card rounded-3xl p-8 space-y-5">
             <ZolaLogo />
             <h1 className="font-display text-2xl font-bold text-white">
-              Conditions d'utilisation & Politique de confidentialité
+              {(lang === 'en' ? settings.legal_title_en : settings.legal_title_fr) || t('legal.title')}
             </h1>
-            <p className="text-sm leading-relaxed text-stone-300">
-              ZOLA est réservé aux personnes majeures (18 ans et plus). Les informations de profil et conversations privées sont protégées, accessibles uniquement aux participants autorisés, et jamais revendues à des tiers.
+            <p className="text-sm leading-relaxed text-stone-300 whitespace-pre-line">
+              {(lang === 'en' ? settings.legal_p1_en : settings.legal_p1_fr) || t('legal.p1')}
             </p>
-            <p className="text-sm leading-relaxed text-stone-300">
-              Tout comportement frauduleux, usurpation d'identité ou harcèlement peut être signalé et entraîne la suspension immédiate du compte par notre modération.
+            <p className="text-sm leading-relaxed text-stone-300 whitespace-pre-line">
+              {(lang === 'en' ? settings.legal_p2_en : settings.legal_p2_fr) || t('legal.p2')}
             </p>
           </div>
         </div>
@@ -275,11 +321,13 @@ export default function App() {
         <AuthViews
           mode={route}
           settings={settings}
+          registerPrefill={registerPrefill}
           onNavigate={handleNavigate}
           onAuthSuccess={(authedUser) => {
             setUser(authedUser);
+            setRegisterPrefill(null);
             loadLanding();
-            setRoute('discover');
+            setRoute(isAdminRole(authedUser.role) ? 'admin' : 'discover');
           }}
         />
         <OfflineIndicator />
@@ -296,7 +344,7 @@ export default function App() {
           onNavigate={handleNavigate}
           onAuthSuccess={(authedUser) => {
             setUser(authedUser);
-            setRoute('discover');
+            setRoute(isAdminRole(authedUser.role) ? 'admin' : 'discover');
           }}
         />
         <OfflineIndicator />
@@ -441,7 +489,7 @@ export default function App() {
         />
       )}
 
-      {route === 'admin' && (
+      {route === 'admin' && isAdminRole(user.role) && (
         <AdminDashboard
           currentUserRole={user.role}
           onSettingsUpdated={loadLanding}
@@ -452,7 +500,7 @@ export default function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
           <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-orange-500/30 bg-[#140E0D] p-8 text-center">
             <p className="font-display text-3xl font-extrabold text-white">
-              C'est un <span className="text-orange-400">Match !</span>{' '}
+              {t('match.itsAMatch')} <span className="text-orange-400">{t('match.matchWord')}</span>{' '}
               <Heart className="inline-block h-7 w-7 fill-red-500 text-red-500 mb-1" />
             </p>
             <div className="my-6 flex items-center justify-center">
@@ -471,7 +519,7 @@ export default function App() {
               />
             </div>
             <p className="text-sm text-stone-200 mb-6">
-              Vous vous plaisez mutuellement avec {wsMatchAlert.partner.first_name} !
+              {t('match.mutualWith', { name: wsMatchAlert.partner.first_name })}
             </p>
             <div className="space-y-2.5">
               <button
@@ -484,14 +532,14 @@ export default function App() {
                 }}
                 className="zola-gradient w-full rounded-full py-3 text-sm font-semibold text-white"
               >
-                Envoyer un message
+                {t('match.sendMessage')}
               </button>
               <button
                 type="button"
                 onClick={() => setWsMatchAlert(null)}
                 className="w-full py-2 text-sm text-stone-300 hover:text-white"
               >
-                Continuer à découvrir
+                {t('match.keepDiscovering')}
               </button>
             </div>
           </div>

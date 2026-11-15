@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../lib/i18n';
 
 interface ZolaLogoProps {
   size?: 'sm' | 'md' | 'lg';
@@ -6,6 +7,7 @@ interface ZolaLogoProps {
 }
 
 export const ZolaLogo: React.FC<ZolaLogoProps> = ({ size = 'md', className = '' }) => {
+  const { brandName } = useI18n();
   const dims = size === 'sm' ? 'w-7 h-7' : size === 'lg' ? 'w-10 h-10' : 'w-8 h-8';
   const textSize = size === 'sm' ? 'text-lg' : size === 'lg' ? 'text-2xl' : 'text-xl';
 
@@ -35,7 +37,7 @@ export const ZolaLogo: React.FC<ZolaLogoProps> = ({ size = 'md', className = '' 
         />
       </svg>
       <span className={`font-display font-extrabold tracking-tight ${textSize} bg-gradient-to-r from-amber-300 via-orange-400 to-red-500 bg-clip-text text-transparent`}>
-        ZOLA
+        {brandName}
       </span>
     </span>
   );

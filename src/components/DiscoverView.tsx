@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BadgeCheck,
   Bookmark,
@@ -13,7 +13,8 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { AFRICAN_COUNTRIES, apiFetch } from '../lib/api';
+import { apiFetch } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import type { Interest, UserProfile } from '../types';
 
 interface DiscoverViewProps {
@@ -25,6 +26,238 @@ interface DiscoverViewProps {
   onFavoritesChanged?: (count: number) => void;
 }
 
+interface DiscoverCardProps {
+  profile: UserProfile;
+  onOpenProfile: (id: number) => void;
+  onLike: (e: React.SyntheticEvent, target: UserProfile, isSuper?: boolean) => void;
+  onPass: (e: React.SyntheticEvent, targetId: number) => void;
+  onToggleFavorite: (e: React.SyntheticEvent, target: UserProfile) => void;
+}
+
+const DiscoverProfileCard: React.FC<DiscoverCardProps> = ({
+  profile: p,
+  onOpenProfile,
+  onLike,
+  onPass,
+  onToggleFavorite,
+}) => {
+  const { t } = useI18n();
+  const [dragX, setDragX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [exiting, setExiting] = useState<'left' | 'right' | null>(null);
+  const gestureRef = useRef<{ x: number; y: number; locked: boolean; cancelled: boolean } | null>(null);
+  const justSwipedRef = useRef(false);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1 || exiting) return;
+    const t = e.touches[0];
+    gestureRef.current = { x: t.clientX, y: t.clientY, locked: false, cancelled: false };
+    justSwipedRef.current = false;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const g = gestureRef.current;
+    const t = e.touches[0];
+    if (!g || g.cancelled || !t) return;
+    const dx = t.clientX - g.x;
+    const dy = t.clientY - g.y;
+
+    if (!g.locked) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) >= Math.abs(dx)) {
+        g.cancelled = true;
+        return;
+      }
+      if (Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy)) {
+        g.locked = true;
+        setDragging(true);
+      } else {
+        return;
+      }
+    }
+
+    const clamped = Math.max(-160, Math.min(160, dx));
+    setDragX(clamped);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    const g = gestureRef.current;
+    gestureRef.current = null;
+    if (!g || !g.locked) {
+      setDragging(false);
+      setDragX(0);
+      return;
+    }
+
+    justSwipedRef.current = true;
+    setDragging(false);
+
+    if (dragX >= 85) {
+      setExiting('right');
+      setTimeout(() => {
+        onLike(e, p, false);
+        setExiting(null);
+        setDragX(0);
+      }, 180);
+    } else if (dragX <= -85 && !p.liked_by_me) {
+      setExiting('left');
+      setTimeout(() => {
+        onPass(e, p.id);
+      }, 180);
+    } else {
+      setDragX(0);
+    }
+  };
+
+  const swipeRatio = Math.min(1, Math.abs(dragX) / 90);
+  const translateVal = exiting === 'right' ? 240 : exiting === 'left' ? -240 : dragX;
+  const rotateVal = translateVal * 0.045;
+
+  return (
+    <article
+      onClick={() => {
+        if (justSwipedRef.current) {
+          justSwipedRef.current = false;
+          return;
+        }
+        onOpenProfile(p.id);
+      }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      style={{
+        transform: `translate3d(${translateVal}px, 0, 0) rotate(${rotateVal}deg)`,
+        opacity: exiting ? 0 : 1,
+        transition: dragging
+          ? 'none'
+          : 'transform 260ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease',
+        touchAction: 'pan-y',
+      }}
+      className="group relative h-[410px] sm:h-84 cursor-pointer select-none overflow-hidden rounded-3xl border border-white/10 bg-[#140F0E] active:scale-[0.99] sm:hover:-translate-y-1 will-change-transform"
+    >
+      <img
+        src={p.avatar_url}
+        alt={p.full_name}
+        referrerPolicy="no-referrer"
+        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+      />
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
+
+      {/* Swipe Direction Stamp Feedback */}
+      {dragX > 24 && (
+        <div
+          style={{ opacity: swipeRatio }}
+          className="pointer-events-none absolute top-14 left-4 rounded-xl border-2 border-orange-400 bg-black/70 px-3 py-1 text-sm font-extrabold tracking-wider text-orange-300 -rotate-6"
+        >
+          {t('discover.stamp.like')}
+        </div>
+      )}
+      {dragX < -24 && !p.liked_by_me && (
+        <div
+          style={{ opacity: swipeRatio }}
+          className="pointer-events-none absolute top-14 right-4 rounded-xl border-2 border-stone-300 bg-black/70 px-3 py-1 text-sm font-extrabold tracking-wider text-stone-200 rotate-6"
+        >
+          {t('discover.stamp.pass')}
+        </div>
+      )}
+
+      <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {p.is_online && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-emerald-300 backdrop-blur-sm">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              {t('common.online')}
+            </span>
+          )}
+          {p.is_boosted && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold text-stone-950 shadow">
+              <Zap className="h-3 w-3 fill-stone-950" />
+              {t('discover.boosted')}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {p.is_verified && (
+            <span
+              title={t('common.verified')}
+              className="flex h-10 w-10 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full bg-black/55 text-sky-400 backdrop-blur-sm"
+            >
+              <BadgeCheck className="h-4 w-4" />
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={(e) => onToggleFavorite(e, p)}
+            title={p.is_favorite ? t('discover.favRemove') : t('discover.favAdd')}
+            aria-label={p.is_favorite ? `${t('discover.favRemove')} — ${p.first_name}` : `${t('discover.favAdd')} — ${p.first_name}`}
+            className={`flex h-11 w-11 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full backdrop-blur-sm transition-all active:scale-90 ${
+              p.is_favorite
+                ? 'bg-amber-400 text-stone-950 shadow'
+                : 'bg-black/55 text-stone-200 hover:bg-amber-400/90 hover:text-stone-950'
+            }`}
+          >
+            <Bookmark className={`h-4 w-4 sm:h-3.5 sm:w-3.5 ${p.is_favorite ? 'fill-current' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      <div className="absolute bottom-3.5 left-3.5 right-3.5 flex items-end justify-between gap-2.5">
+        <div className="min-w-0">
+          <h2 className="font-display text-xl sm:text-lg font-bold text-white truncate">
+            {p.first_name}, <span className="tabular-nums">{p.age}</span>
+          </h2>
+          <p className="text-xs text-stone-300 truncate">
+            {p.city}, {p.country_code}
+            {p.compatibility_score ? ` · ${t('discover.affinity', { score: p.compatibility_score })}` : ''}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 sm:gap-1.5 shrink-0">
+          {!p.liked_by_me && (
+            <>
+              <button
+                type="button"
+                onClick={(e) => onPass(e, p.id)}
+                aria-label={`${t('discover.pass')} ${p.first_name}`}
+                title={t('discover.pass')}
+                className="flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center rounded-full bg-black/65 text-stone-200 border border-white/15 hover:border-white/40 hover:text-white active:scale-90 transition-all"
+              >
+                <X className="h-5 w-5 sm:h-4 sm:w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => onLike(e, p, true)}
+                aria-label={`${t('discover.superLike')} ${p.first_name}`}
+                title={t('discover.superLike')}
+                className="flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center rounded-full bg-black/65 text-amber-300 border border-amber-400/40 hover:bg-amber-400 hover:text-stone-950 active:scale-90 transition-all"
+              >
+                <Star className="h-5 w-5 sm:h-4 sm:w-4 fill-current" />
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={(e) => onLike(e, p, false)}
+            aria-label={`${t('member.like')} ${p.first_name}`}
+            className={`flex h-12 w-12 sm:h-11 sm:w-11 items-center justify-center rounded-full transition-all active:scale-90 shadow-lg ${
+              p.is_super_liked
+                ? 'bg-gradient-to-br from-amber-300 to-orange-500 text-stone-950 shadow-amber-500/40'
+                : p.liked_by_me
+                  ? 'zola-gradient text-white shadow-orange-600/40'
+                  : 'bg-black/65 text-white border border-white/20 hover:border-orange-500 hover:bg-orange-600'
+            }`}
+          >
+            {p.is_super_liked ? (
+              <Star className="h-5 w-5 fill-current" />
+            ) : (
+              <Heart className={`h-5 w-5 ${p.liked_by_me ? 'fill-white' : ''}`} />
+            )}
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+};
+
 export const DiscoverView: React.FC<DiscoverViewProps> = ({
   currentUser,
   interests,
@@ -33,6 +266,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   onGoPremium,
   onFavoritesChanged,
 }) => {
+  const { t, tCountry, tInterest, countries } = useI18n();
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -95,6 +329,8 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
         setPage(data.page);
         setHasMore(data.hasMore);
         setPassedCount(data.passed_count);
+      } catch (err) {
+        setLikeError(err instanceof Error ? err.message : 'Impossible de charger les profils.');
       } finally {
         setLoading(false);
       }
@@ -103,8 +339,12 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   );
 
   const loadLikesMe = useCallback(async () => {
-    const data = await apiFetch<{ locked: boolean; count: number; profiles: UserProfile[] }>('/api/likes/received');
-    setLikesMe(data);
+    try {
+      const data = await apiFetch<{ locked: boolean; count: number; profiles: UserProfile[] }>('/api/likes/received');
+      setLikesMe(data);
+    } catch {
+      // Ignore transient likes load error
+    }
   }, []);
 
   useEffect(() => {
@@ -112,7 +352,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     loadLikesMe();
   }, [loadProfiles, loadLikesMe]);
 
-  const handleLike = async (e: React.MouseEvent, target: UserProfile, isSuper = false) => {
+  const handleLike = async (e: React.SyntheticEvent, target: UserProfile, isSuper = false) => {
     e.stopPropagation();
     setLikeError('');
     try {
@@ -148,17 +388,25 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     }
   };
 
-  const handlePass = async (e: React.MouseEvent, targetId: number) => {
+  const handlePass = async (e: React.SyntheticEvent, targetId: number) => {
     e.stopPropagation();
-    await apiFetch(`/api/passes/${targetId}`, { method: 'POST' });
-    setProfiles((prev) => prev.filter((p) => p.id !== targetId));
-    setPassedCount((c) => c + 1);
-    setTotal((t) => Math.max(0, t - 1));
+    try {
+      await apiFetch(`/api/passes/${targetId}`, { method: 'POST' });
+      setProfiles((prev) => prev.filter((p) => p.id !== targetId));
+      setPassedCount((c) => c + 1);
+      setTotal((t) => Math.max(0, t - 1));
+    } catch (err) {
+      setLikeError(err instanceof Error ? err.message : 'Impossible de passer ce profil.');
+    }
   };
 
   const handleResetPasses = async () => {
-    await apiFetch('/api/passes', { method: 'DELETE' });
-    loadProfiles(1, false);
+    try {
+      await apiFetch('/api/passes', { method: 'DELETE' });
+      loadProfiles(1, false);
+    } catch (err) {
+      setLikeError(err instanceof Error ? err.message : 'Impossible de réinitialiser les profils passés.');
+    }
   };
 
   const handleBoost = async () => {
@@ -172,7 +420,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     }
   };
 
-  const handleToggleFavorite = async (e: React.MouseEvent, target: UserProfile) => {
+  const handleToggleFavorite = async (e: React.SyntheticEvent, target: UserProfile) => {
     e.stopPropagation();
     try {
       const res = await apiFetch<{ ok: boolean; is_favorite: boolean; count: number; message: string }>(
@@ -191,12 +439,14 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-x-clip">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-white">Découvrir</h1>
+          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-white">{t('discover.title')}</h1>
           <p className="text-sm text-stone-400 tabular-nums">
-            {total} profil{total > 1 ? 's' : ''} correspondant{total > 1 ? 's' : ''} à vos critères.
+            {total === 1
+              ? t('discover.countSingular', { count: total })
+              : t('discover.countPlural', { count: total })}
           </p>
         </div>
 
@@ -209,7 +459,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                 tab === 'discover' ? 'zola-gradient text-white' : 'text-stone-300 hover:text-white'
               }`}
             >
-              Profils
+              {t('discover.tab.profiles')}
             </button>
             <button
               type="button"
@@ -218,7 +468,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                 tab === 'likes-me' ? 'zola-gradient text-white' : 'text-stone-300 hover:text-white'
               }`}
             >
-              Vous aiment ({likesMe.count})
+              {t('discover.tab.likesMe', { count: likesMe.count })}
             </button>
           </div>
 
@@ -226,11 +476,11 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             <button
               type="button"
               onClick={handleResetPasses}
-              title="Revoir les profils passés"
+              title={t('discover.reviewPassedTitle')}
               className="inline-flex items-center gap-1.5 rounded-full border border-white/12 bg-white/5 px-3 py-2 text-xs text-stone-300 hover:bg-white/10"
             >
               <RotateCcw className="h-3.5 w-3.5" />
-              Revoir ({passedCount})
+              {t('discover.reviewPassed', { count: passedCount })}
             </button>
           )}
 
@@ -240,7 +490,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-amber-400/35 bg-amber-400/10 px-3.5 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-400/20"
           >
             <Zap className="h-3.5 w-3.5" />
-            Remonter mon profil
+            {t('discover.boost')}
           </button>
         </div>
       </div>
@@ -260,7 +510,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
               onClick={onGoPremium}
               className="shrink-0 rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-stone-950"
             >
-              Passer Premium
+              {t('discover.goPremium')}
             </button>
           )}
         </div>
@@ -275,7 +525,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Rechercher par prénom, ville, profession..."
+                placeholder={t('discover.searchPlaceholder')}
                 className="w-full rounded-xl border border-white/10 bg-white/5 pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
               />
             </div>
@@ -285,8 +535,8 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
               onChange={(e) => setSortMode(e.target.value as 'compatibility' | 'recent')}
               className="rounded-xl border border-white/10 bg-[#1B1413] px-4 py-2.5 text-sm text-white focus:border-orange-500 focus:outline-none"
             >
-              <option value="compatibility">Tri : Affinité</option>
-              <option value="recent">Tri : Activité récente</option>
+              <option value="compatibility">{t('discover.sort.compatibility')}</option>
+              <option value="recent">{t('discover.sort.recent')}</option>
             </select>
 
             <select
@@ -294,9 +544,9 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
               onChange={(e) => setGender(e.target.value)}
               className="rounded-xl border border-white/10 bg-[#1B1413] px-4 py-2.5 text-sm text-white focus:border-orange-500 focus:outline-none"
             >
-              <option value="Tous">Tous les genres</option>
-              <option value="Femme">Femmes</option>
-              <option value="Homme">Hommes</option>
+              <option value="Tous">{t('discover.gender.all')}</option>
+              <option value="Femme">{t('discover.gender.women')}</option>
+              <option value="Homme">{t('discover.gender.men')}</option>
             </select>
 
             <button
@@ -305,39 +555,41 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/12 bg-white/5 px-4 py-2.5 text-sm font-medium text-stone-200 hover:bg-white/10"
             >
               <SlidersHorizontal className="h-4 w-4 text-orange-400" />
-              Filtres
+              {t('discover.filters')}
             </button>
           </div>
 
           {showFilters && (
             <div className="grid grid-cols-1 gap-3 border-t border-white/8 pt-4 sm:grid-cols-2 lg:grid-cols-5">
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Pays</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('discover.filter.country')}</label>
                 <select
                   value={country}
                   onChange={(e) => setCountry(e.target.value)}
                   className="w-full rounded-xl border border-white/10 bg-[#1B1413] px-3 py-2 text-sm text-white"
                 >
-                  <option value="">Tous les pays</option>
-                  {AFRICAN_COUNTRIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
+                  <option value="">{t('discover.filter.allCountries')}</option>
+                  {countries.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {tCountry(c.name)}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Ville</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('discover.filter.city')}</label>
                 <input
                   type="text"
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
-                  placeholder="Ex: Dakar, Abidjan..."
+                  placeholder={t('discover.filter.cityPlaceholder')}
                   className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white"
                 />
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Âge ({minAge} - {maxAge} ans)</label>
+                <label className="block text-xs text-stone-400 mb-1">
+                  {t('discover.filter.age', { min: minAge, max: maxAge })}
+                </label>
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
@@ -359,16 +611,16 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Centre d'intérêt</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('discover.filter.interest')}</label>
                 <select
                   value={interestId}
                   onChange={(e) => setInterestId(Number(e.target.value))}
                   className="w-full rounded-xl border border-white/10 bg-[#1B1413] px-3 py-2 text-sm text-white"
                 >
-                  <option value={0}>Tous</option>
+                  <option value={0}>{t('discover.filter.allInterests')}</option>
                   {interests.map((i) => (
                     <option key={i.id} value={i.id}>
-                      {i.name}
+                      {tInterest(i.name)}
                     </option>
                   ))}
                 </select>
@@ -381,7 +633,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                     onChange={(e) => setVerifiedOnly(e.target.checked)}
                     className="h-4 w-4 accent-orange-500"
                   />
-                  Profils vérifiés
+                  {t('discover.filter.verifiedOnly')}
                 </label>
               </div>
             </div>
@@ -391,19 +643,17 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
 
       {tab === 'discover' ? (
         loading && profiles.length === 0 ? (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {[1, 2, 3, 4].map((n) => (
-              <div key={n} className="h-80 rounded-3xl bg-white/5 animate-pulse border border-white/8" />
+              <div key={n} className="h-[410px] sm:h-84 rounded-3xl bg-white/5 animate-pulse border border-white/8" />
             ))}
           </div>
         ) : profiles.length === 0 ? (
-          <div className="zola-card rounded-3xl p-10 text-center space-y-3">
+          <div className="zola-card rounded-3xl p-8 sm:p-10 text-center space-y-3">
             <Sparkles className="mx-auto h-8 w-8 text-orange-400" />
-            <h3 className="font-display text-lg font-bold text-white">Aucun profil trouvé</h3>
-            <p className="text-sm text-stone-400">
-              Ajustez vos filtres ou réinitialisez les profils passés pour découvrir d'autres membres.
-            </p>
-            <div className="flex justify-center gap-3 pt-1">
+            <h3 className="font-display text-lg font-bold text-white">{t('discover.empty.title')}</h3>
+            <p className="text-sm text-stone-400">{t('discover.empty.desc')}</p>
+            <div className="flex flex-wrap justify-center gap-3 pt-1">
               <button
                 type="button"
                 onClick={() => {
@@ -416,132 +666,34 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                   setInterestId(0);
                   setVerifiedOnly(false);
                 }}
-                className="rounded-full border border-white/15 bg-white/5 px-5 py-2 text-sm font-medium text-white hover:bg-white/10"
+                className="min-h-[44px] rounded-full border border-white/15 bg-white/5 px-5 py-2 text-sm font-medium text-white hover:bg-white/10 active:scale-95 transition-all"
               >
-                Réinitialiser les filtres
+                {t('discover.empty.resetFilters')}
               </button>
               {passedCount > 0 && (
                 <button
                   type="button"
                   onClick={handleResetPasses}
-                  className="zola-gradient rounded-full px-5 py-2 text-sm font-medium text-white"
+                  className="min-h-[44px] zola-gradient rounded-full px-5 py-2 text-sm font-medium text-white active:scale-95 transition-transform"
                 >
-                  Revoir les profils passés
+                  {t('discover.empty.reviewPassed')}
                 </button>
               )}
             </div>
           </div>
         ) : (
           <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+            <p className="sm:hidden text-xs text-stone-400 text-center">{t('discover.swipeHint')}</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {profiles.map((p) => (
-                <article
+                <DiscoverProfileCard
                   key={p.id}
-                  onClick={() => onViewProfile(p.id)}
-                  className="group relative h-76 sm:h-84 cursor-pointer overflow-hidden rounded-3xl border border-white/10 bg-[#140F0E] transition-transform hover:-translate-y-1"
-                >
-                  <img
-                    src={p.avatar_url}
-                    alt={p.full_name}
-                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  />
-                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
-
-                  <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-1.5">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {p.is_online && (
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-emerald-300 backdrop-blur-sm">
-                          <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                          En ligne
-                        </span>
-                      )}
-                      {p.is_boosted && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold text-stone-950 shadow">
-                          <Zap className="h-3 w-3 fill-stone-950" />
-                          Boosté
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {p.is_verified && (
-                        <span
-                          title="Profil vérifié"
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/55 text-sky-400 backdrop-blur-sm"
-                        >
-                          <BadgeCheck className="h-4 w-4" />
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={(e) => handleToggleFavorite(e, p)}
-                        title={p.is_favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
-                        aria-label={p.is_favorite ? `Retirer ${p.first_name} des favoris` : `Ajouter ${p.first_name} aux favoris`}
-                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full backdrop-blur-sm transition-colors ${
-                          p.is_favorite
-                            ? 'bg-amber-400 text-stone-950 shadow'
-                            : 'bg-black/55 text-stone-200 hover:bg-amber-400/90 hover:text-stone-950'
-                        }`}
-                      >
-                        <Bookmark className={`h-3.5 w-3.5 ${p.is_favorite ? 'fill-current' : ''}`} />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2">
-                    <div className="min-w-0">
-                      <h2 className="font-display text-lg font-bold text-white truncate">
-                        {p.first_name}, <span className="tabular-nums">{p.age}</span>
-                      </h2>
-                      <p className="text-xs text-stone-300 truncate">
-                        {p.city}, {p.country_code}
-                        {p.compatibility_score ? ` · ${p.compatibility_score}% affinité` : ''}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {!p.liked_by_me && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={(e) => handlePass(e, p.id)}
-                            aria-label={`Passer ${p.first_name}`}
-                            title="Passer"
-                            className="flex h-9 w-9 items-center justify-center rounded-full bg-black/65 text-stone-300 border border-white/15 hover:border-white/40 hover:text-white"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleLike(e, p, true)}
-                            aria-label={`Coup de cœur ${p.first_name}`}
-                            title="Coup de cœur (Super-Like)"
-                            className="flex h-9 w-9 items-center justify-center rounded-full bg-black/65 text-amber-300 border border-amber-400/40 hover:bg-amber-400 hover:text-stone-950 transition-colors"
-                          >
-                            <Star className="h-4 w-4 fill-current" />
-                          </button>
-                        </>
-                      )}
-                      <button
-                        type="button"
-                        onClick={(e) => handleLike(e, p, false)}
-                        aria-label={`Aimer ${p.first_name}`}
-                        className={`flex h-11 w-11 items-center justify-center rounded-full transition-all shadow-lg ${
-                          p.is_super_liked
-                            ? 'bg-gradient-to-br from-amber-300 to-orange-500 text-stone-950 shadow-amber-500/40'
-                            : p.liked_by_me
-                              ? 'zola-gradient text-white shadow-orange-600/40'
-                              : 'bg-black/65 text-white border border-white/20 hover:border-orange-500 hover:bg-orange-600'
-                        }`}
-                      >
-                        {p.is_super_liked ? (
-                          <Star className="h-5 w-5 fill-current" />
-                        ) : (
-                          <Heart className={`h-5 w-5 ${p.liked_by_me ? 'fill-white' : ''}`} />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </article>
+                  profile={p}
+                  onOpenProfile={onViewProfile}
+                  onLike={handleLike}
+                  onPass={handlePass}
+                  onToggleFavorite={handleToggleFavorite}
+                />
               ))}
             </div>
 
@@ -550,61 +702,62 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                 <button
                   type="button"
                   onClick={() => loadProfiles(page + 1, true)}
-                  className="rounded-full border border-white/15 bg-white/5 px-6 py-2.5 text-sm font-medium text-white hover:bg-white/10"
+                  className="min-h-[44px] rounded-full border border-white/15 bg-white/5 px-6 py-2.5 text-sm font-medium text-white hover:bg-white/10 active:scale-95 transition-all"
                 >
-                  Charger plus de profils
+                  {t('discover.loadMore')}
                 </button>
               </div>
             )}
           </div>
         )
       ) : likesMe.locked ? (
-        <div className="zola-card rounded-3xl p-10 text-center space-y-4">
+        <div className="zola-card rounded-3xl p-8 sm:p-10 text-center space-y-4">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-400/15 text-amber-300">
             <Lock className="h-7 w-7" />
           </div>
           <h3 className="font-display text-xl font-bold text-white">
-            {likesMe.count} personne{likesMe.count > 1 ? 's' : ''} vous {likesMe.count > 1 ? 'ont' : 'a'} liké
+            {likesMe.count === 1
+              ? t('discover.likesMe.lockedTitleOne')
+              : t('discover.likesMe.lockedTitle', { count: likesMe.count })}
           </h3>
-          <p className="mx-auto max-w-md text-sm text-stone-400">
-            Passez à ZOLA Premium pour découvrir immédiatement qui s'intéresse à votre profil et créer un Match sans attendre.
-          </p>
+          <p className="mx-auto max-w-md text-sm text-stone-400">{t('discover.likesMe.lockedDesc')}</p>
           <button
             type="button"
             onClick={onGoPremium}
-            className="zola-gradient zola-gradient-hover inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold text-white"
+            className="min-h-[44px] zola-gradient zola-gradient-hover inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-semibold text-white active:scale-95 transition-transform"
           >
             <Crown className="h-4 w-4 fill-white" />
-            Voir avec ZOLA Premium
+            {t('discover.likesMe.unlockBtn')}
           </button>
         </div>
       ) : likesMe.profiles.length === 0 ? (
         <div className="zola-card rounded-3xl p-10 text-center text-sm text-stone-400">
-          Personne n'a encore liké votre profil pour le moment.
+          {t('discover.likesMe.empty')}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {likesMe.profiles.map((p) => (
             <article
               key={p.id}
               onClick={() => onViewProfile(p.id)}
-              className="group relative h-72 cursor-pointer overflow-hidden rounded-3xl border border-white/10 bg-[#140F0E]"
+              className="group relative h-[360px] sm:h-72 cursor-pointer overflow-hidden rounded-3xl border border-white/10 bg-[#140F0E] active:scale-[0.985] transition-transform duration-150"
             >
-              <img src={p.avatar_url} alt={p.full_name} className="h-full w-full object-cover" />
+              <img src={p.avatar_url} alt={p.full_name} referrerPolicy="no-referrer" className="h-full w-full object-cover" />
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-              <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-white">
+              <div className="absolute bottom-3.5 left-3.5 right-3.5 flex items-end justify-between gap-2">
+                <div className="min-w-0">
+                  <h2 className="font-display text-lg font-bold text-white truncate">
                     {p.first_name}, {p.age}
                   </h2>
-                  <p className="text-xs text-stone-300">
+                  <p className="text-xs text-stone-300 truncate">
                     {p.city}, {p.country_code}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={(e) => handleLike(e, p)}
-                  className="zola-gradient flex h-11 w-11 items-center justify-center rounded-full text-white"
+                  aria-label={`${t('member.like')} ${p.first_name}`}
+                  className="zola-gradient flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white active:scale-90 transition-transform"
                 >
                   <Heart className="h-5 w-5 fill-white" />
                 </button>
@@ -621,7 +774,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             <div className="relative z-10 space-y-6">
               <div>
                 <p className="font-display text-3xl sm:text-4xl font-extrabold text-white">
-                  C'est un <span className="text-orange-400">Match !</span>{' '}
+                  {t('match.itsAMatch')} <span className="text-orange-400">{t('match.matchWord')}</span>{' '}
                   <Heart className="inline-block h-7 w-7 fill-red-500 text-red-500 mb-1" />
                 </p>
               </div>
@@ -643,9 +796,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
               </div>
 
               <p className="text-sm text-stone-200">
-                Vous vous plaisez mutuellement !
-                <br />
-                Envoyez-lui un message pour briser la glace.
+                {t('match.mutualWith', { name: matchModal.partner.first_name })}
               </p>
 
               <div className="space-y-3 pt-2">
@@ -658,14 +809,14 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
                   }}
                   className="zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-600/30"
                 >
-                  Envoyer un message
+                  {t('match.sendMessage')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setMatchModal(null)}
                   className="w-full py-2 text-sm font-medium text-stone-300 hover:text-white"
                 >
-                  Continuer à découvrir
+                  {t('match.keepDiscovering')}
                 </button>
               </div>
             </div>

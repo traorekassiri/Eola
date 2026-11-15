@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_SITE_SETTINGS } from '../src/lib/cms.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) {
@@ -376,23 +377,15 @@ function seedInitialData() {
     insertPlan.run('6-mois', '6 mois', 6, 19900, 0, sharedFeatures);
   }
 
-  const settingsCount = (db.prepare('SELECT COUNT(*) as c FROM site_settings').get() as { c: number }).c;
-  if (settingsCount === 0) {
-    const insertSetting = db.prepare('INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?)');
-    const defaults: Record<string, string> = {
-      hero_title: "Trouvez l'amour en Afrique",
-      hero_subtitle: "Rencontrez des célibataires authentiques, près de chez vous ou partout en Afrique.",
-      hero_cta_primary: 'Créer un compte',
-      hero_cta_secondary: 'En savoir plus',
-      footer_slogan: "Ensemble, trouvons l'amour",
-      oauth_google_enabled: process.env.GOOGLE_CLIENT_ID ? '1' : '0',
-      oauth_facebook_enabled: process.env.FACEBOOK_APP_ID ? '1' : '0',
-      oauth_apple_enabled: process.env.APPLE_CLIENT_ID ? '1' : '0',
-      payment_provider_label: 'Paiement sécurisé par SasPay (Mobile Money & Carte)',
-    };
-    for (const [k, v] of Object.entries(defaults)) {
-      insertSetting.run(k, v);
-    }
+  const insertSetting = db.prepare('INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES (?, ?)');
+  const defaults: Record<string, string> = {
+    ...DEFAULT_SITE_SETTINGS,
+    oauth_google_enabled: process.env.GOOGLE_CLIENT_ID ? '1' : '0',
+    oauth_facebook_enabled: process.env.FACEBOOK_APP_ID ? '1' : '0',
+    oauth_apple_enabled: process.env.APPLE_CLIENT_ID ? '1' : '0',
+  };
+  for (const [k, v] of Object.entries(defaults)) {
+    insertSetting.run(k, v);
   }
 
   const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;

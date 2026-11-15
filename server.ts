@@ -15,6 +15,7 @@ import {
   requireAuth,
   requireCsrf,
   resetRateLimit,
+  verifySessionToken,
   type AuthenticatedRequest,
 } from './server/auth.ts';
 import { db, hashPassword, initDatabase, verifyPassword } from './server/db.ts';
@@ -163,8 +164,28 @@ function broadcastToUser(userId: number, event: string, payload: unknown) {
   }
 }
 
+function setAuthCookie(req: express.Request, res: express.Response, cookieValue: string, maxAgeMs: number) {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.cookie('zola_session', cookieValue, {
+    httpOnly: true,
+    sameSite: isHttps ? 'none' : 'lax',
+    secure: isHttps,
+    maxAge: maxAgeMs,
+    path: '/',
+  });
+}
+
 wss.on('connection', (ws, req) => {
-  const session = parseSessionCookie(req.headers.cookie);
+  let session = parseSessionCookie(req.headers.cookie);
+  if (!session && req.url) {
+    try {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const tokenParam = parsedUrl.searchParams.get('token') || undefined;
+      session = verifySessionToken(tokenParam);
+    } catch {
+      // Ignore malformed URL
+    }
+  }
   if (!session) {
     ws.close(1008, 'Unauthorized');
     return;
@@ -277,11 +298,53 @@ app.get('/api/public/landing', (_req, res) => {
     active: number;
   }>;
 
+  const totalMatches = (db.prepare('SELECT COUNT(*) as c FROM matches').get() as { c: number }).c;
+  const countriesCount = (
+    db
+      .prepare(
+        `SELECT COUNT(DISTINCT up.country) as c
+         FROM user_profiles up
+         JOIN users u ON u.id = up.user_id
+         WHERE u.status = 'active' AND up.country != ''`
+      )
+      .get() as { c: number }
+  ).c;
+
+  const previewRows = db
+    .prepare(
+      `SELECT up.full_name, up.birth_date, up.city, up.country, up.avatar_url, u.is_verified
+       FROM user_profiles up
+       JOIN users u ON u.id = up.user_id
+       WHERE u.status = 'active' AND u.profile_visible = 1 AND u.role = 'user'
+       ORDER BY u.is_verified DESC, u.id ASC
+       LIMIT 3`
+    )
+    .all() as Array<{
+    full_name: string;
+    birth_date: string;
+    city: string;
+    country: string;
+    avatar_url: string;
+    is_verified: number;
+  }>;
+
+  const previewProfiles = previewRows.map((p) => ({
+    first_name: p.full_name.trim().split(/\s+/)[0] || p.full_name,
+    age: computeAge(p.birth_date),
+    city: p.city,
+    country: p.country,
+    avatar_url: p.avatar_url,
+    is_verified: Boolean(p.is_verified),
+  }));
+
   const interests = db.prepare('SELECT id, name, category FROM interests ORDER BY name ASC').all();
 
   res.json({
     active_members: activeMembers,
     verified_members: verifiedMembers,
+    total_matches: totalMatches,
+    countries_count: countriesCount,
+    preview_profiles: previewProfiles,
     settings,
     plans: plans.map((p) => ({
       ...p,
@@ -387,16 +450,12 @@ app.post('/api/auth/register', (req, res) => {
     String(req.headers['user-agent'] || 'Navigateur Web'),
     req.ip || '0.0.0.0'
   );
-  res.cookie('zola_session', cookieValue, {
-    httpOnly: true,
-    sameSite: 'lax',
-    maxAge: maxAgeMs,
-    path: '/',
-  });
+  setAuthCookie(req, res, cookieValue, maxAgeMs);
 
   res.status(201).json({
     user: getFullUserProfile(userId, userId),
     csrfToken,
+    sessionToken: cookieValue,
   });
 });
 
@@ -458,24 +517,28 @@ app.post('/api/auth/login', (req, res) => {
     String(req.headers['user-agent'] || 'Navigateur Web'),
     ip
   );
-  res.cookie('zola_session', cookieValue, {
-    httpOnly: true,
-    sameSite: 'lax',
-    maxAge: maxAgeMs,
-    path: '/',
-  });
+  setAuthCookie(req, res, cookieValue, maxAgeMs);
 
   res.json({
     user: getFullUserProfile(user.id, user.id),
     csrfToken,
+    sessionToken: cookieValue,
   });
 });
 
 app.post('/api/auth/logout', (req: AuthenticatedRequest, res) => {
   if (req.auth) {
     db.prepare("UPDATE users SET is_online = 0, last_seen_at = datetime('now') WHERE id = ?").run(req.auth.userId);
+    if (req.auth.sessionId) {
+      db.prepare('UPDATE user_sessions SET revoked = 1 WHERE session_id = ?').run(req.auth.sessionId);
+    }
   }
-  res.clearCookie('zola_session', { path: '/' });
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.clearCookie('zola_session', {
+    path: '/',
+    sameSite: isHttps ? 'none' : 'lax',
+    secure: isHttps,
+  });
   res.json({ ok: true });
 });
 
@@ -2177,6 +2240,8 @@ app.get('/api/admin/overview', requireAdmin, (req, res) => {
     )
     .all();
 
+  const interests = db.prepare('SELECT id, name, category FROM interests ORDER BY name ASC').all();
+
   res.json({
     stats,
     monthly_signups: monthlySignups,
@@ -2186,6 +2251,7 @@ app.get('/api/admin/overview', requireAdmin, (req, res) => {
     reports,
     verifications,
     payments,
+    interests,
     plans: plans.map((p) => ({
       ...p,
       is_popular: Boolean(p.is_popular),
@@ -2370,21 +2436,148 @@ app.patch('/api/admin/reports/:id', requireAdmin, (req: AuthenticatedRequest, re
   res.json({ ok: true });
 });
 
-app.put('/api/admin/plans/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
-  const planId = Number(req.params.id);
-  const { price_fcfa, is_popular, active } = req.body ?? {};
-  if (Number(price_fcfa) < 500) {
-    res.status(400).json({ error: 'Tarif invalide.' });
+app.post('/api/admin/plans', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const { name, slug, duration_months, price_fcfa, is_popular, active, features } = req.body ?? {};
+  const cleanName = String(name || '').trim();
+  const dur = Math.max(1, Number(duration_months || 1));
+  const price = Number(price_fcfa || 0);
+  if (!cleanName || price < 500) {
+    res.status(400).json({ error: 'Nom ou tarif invalide (minimum 500 FCFA).' });
     return;
   }
-  db.prepare('UPDATE subscription_plans SET price_fcfa = ?, is_popular = ?, active = ? WHERE id = ?').run(
-    Number(price_fcfa),
-    is_popular ? 1 : 0,
-    active ? 1 : 0,
-    planId
-  );
-  recordAuditLog(req.auth!.userId, 'plan_update', 'plan', planId, `Tarif: ${price_fcfa} FCFA`);
+  const cleanSlug =
+    String(slug || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-') || `plan-${Date.now()}`;
+  const featureList = Array.isArray(features)
+    ? features.map((f) => String(f).trim()).filter(Boolean)
+    : [];
+  try {
+    const info = db
+      .prepare(
+        'INSERT INTO subscription_plans (slug, name, duration_months, price_fcfa, is_popular, features_json, active) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        cleanSlug,
+        cleanName,
+        dur,
+        price,
+        is_popular ? 1 : 0,
+        JSON.stringify(featureList),
+        active === false ? 0 : 1
+      );
+    recordAuditLog(req.auth!.userId, 'plan_create', 'plan', Number(info.lastInsertRowid), cleanName);
+    res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+  } catch {
+    res.status(400).json({ error: 'Slug déjà utilisé pour un autre forfait.' });
+  }
+});
+
+app.put('/api/admin/plans/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const planId = Number(req.params.id);
+  const existing = db
+    .prepare('SELECT id, slug, name, duration_months, price_fcfa, is_popular, features_json, active FROM subscription_plans WHERE id = ?')
+    .get(planId) as Record<string, unknown> | undefined;
+  if (!existing) {
+    res.status(404).json({ error: 'Formule introuvable.' });
+    return;
+  }
+  const { name, slug, duration_months, price_fcfa, is_popular, active, features } = req.body ?? {};
+  const nextPrice = price_fcfa !== undefined ? Number(price_fcfa) : Number(existing.price_fcfa);
+  if (nextPrice < 500) {
+    res.status(400).json({ error: 'Tarif invalide (minimum 500 FCFA).' });
+    return;
+  }
+  const nextName = name !== undefined ? String(name).trim() : String(existing.name);
+  const nextSlug =
+    slug !== undefined
+      ? String(slug).trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-') || String(existing.slug)
+      : String(existing.slug);
+  const nextDuration =
+    duration_months !== undefined ? Math.max(1, Number(duration_months)) : Number(existing.duration_months);
+  const nextPopular = is_popular !== undefined ? (is_popular ? 1 : 0) : Number(existing.is_popular);
+  const nextActive = active !== undefined ? (active ? 1 : 0) : Number(existing.active);
+  const nextFeatures = Array.isArray(features)
+    ? JSON.stringify(features.map((f) => String(f).trim()).filter(Boolean))
+    : String(existing.features_json);
+
+  db.prepare(
+    'UPDATE subscription_plans SET name = ?, slug = ?, duration_months = ?, price_fcfa = ?, is_popular = ?, features_json = ?, active = ? WHERE id = ?'
+  ).run(nextName, nextSlug, nextDuration, nextPrice, nextPopular, nextFeatures, nextActive, planId);
+  recordAuditLog(req.auth!.userId, 'plan_update', 'plan', planId, `${nextName} · ${nextPrice} FCFA`);
   res.json({ ok: true });
+});
+
+app.delete('/api/admin/plans/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const planId = Number(req.params.id);
+  const usedInSubs = (db.prepare('SELECT COUNT(*) as c FROM subscriptions WHERE plan_id = ?').get(planId) as { c: number }).c;
+  const usedInPay = (db.prepare('SELECT COUNT(*) as c FROM payments WHERE plan_id = ?').get(planId) as { c: number }).c;
+  if (usedInSubs > 0 || usedInPay > 0) {
+    db.prepare('UPDATE subscription_plans SET active = 0 WHERE id = ?').run(planId);
+    recordAuditLog(req.auth!.userId, 'plan_archive', 'plan', planId, 'Désactivé (historique existant)');
+    res.json({ ok: true, archived: true });
+    return;
+  }
+  db.prepare('DELETE FROM subscription_plans WHERE id = ?').run(planId);
+  recordAuditLog(req.auth!.userId, 'plan_delete', 'plan', planId);
+  res.json({ ok: true, archived: false });
+});
+
+app.post('/api/admin/interests', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const name = String(req.body?.name || '').trim();
+  const category = String(req.body?.category || 'Culture').trim() || 'Culture';
+  if (!name) {
+    res.status(400).json({ error: "Nom du centre d'intérêt requis." });
+    return;
+  }
+  try {
+    const info = db.prepare('INSERT INTO interests (name, category) VALUES (?, ?)').run(name, category);
+    recordAuditLog(req.auth!.userId, 'interest_create', 'interest', Number(info.lastInsertRowid), name);
+    res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), name, category });
+  } catch {
+    res.status(400).json({ error: "Ce centre d'intérêt existe déjà." });
+  }
+});
+
+app.put('/api/admin/interests/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name || '').trim();
+  const category = String(req.body?.category || 'Culture').trim() || 'Culture';
+  if (!name) {
+    res.status(400).json({ error: "Nom du centre d'intérêt requis." });
+    return;
+  }
+  try {
+    db.prepare('UPDATE interests SET name = ?, category = ? WHERE id = ?').run(name, category, id);
+    recordAuditLog(req.auth!.userId, 'interest_update', 'interest', id, name);
+    res.json({ ok: true });
+  } catch {
+    res.status(400).json({ error: "Ce nom est déjà utilisé." });
+  }
+});
+
+app.delete('/api/admin/interests/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM interests WHERE id = ?').run(id);
+  recordAuditLog(req.auth!.userId, 'interest_delete', 'interest', id);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/media', requireAdmin, uploadImage.single('image'), (req: AuthenticatedRequest, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'Aucune image reçue.' });
+    return;
+  }
+  if (!validateMagicBytes(req.file.path, 'image')) {
+    fs.unlinkSync(req.file.path);
+    res.status(400).json({ error: 'Fichier image invalide.' });
+    return;
+  }
+  stripJpegExifInPlace(req.file.path);
+  const url = `/uploads/${req.file.filename}`;
+  recordAuditLog(req.auth!.userId, 'cms_media_upload', 'media', req.file.filename, url);
+  res.json({ url });
 });
 
 app.put('/api/admin/settings', requireAdmin, (req: AuthenticatedRequest, res) => {
@@ -2397,7 +2590,7 @@ app.put('/api/admin/settings', requireAdmin, (req: AuthenticatedRequest, res) =>
     "INSERT INTO site_settings (setting_key, setting_value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at"
   );
   for (const [k, v] of Object.entries(updates)) {
-    stmt.run(k, String(v));
+    stmt.run(k, String(v ?? ''));
   }
   recordAuditLog(req.auth!.userId, 'settings_update', 'site_settings', 'global');
   res.json({ ok: true });

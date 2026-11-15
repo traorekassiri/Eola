@@ -15,8 +15,10 @@ import {
   Trash2,
   User,
 } from 'lucide-react';
-import { AFRICAN_COUNTRIES, ZODIAC_SIGNS, apiFetch } from '../lib/api';
+import { apiFetch } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import type { Interest, NotificationItem, UserProfile, UserSessionRecord } from '../types';
+import { LanguageToggle } from './LanguageToggle';
 
 interface EditProfileViewProps {
   user: UserProfile;
@@ -31,6 +33,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
   onUpdated,
   onBack,
 }) => {
+  const { t, tCountry, tGender, tZodiac, tInterest, countries, zodiacSigns, brandName } = useI18n();
   const [fullName, setFullName] = useState(user.full_name);
   const [birthDate, setBirthDate] = useState(user.birth_date);
   const [gender, setGender] = useState<'Femme' | 'Homme'>(user.gender);
@@ -46,7 +49,10 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [verifStatus, setVerifStatus] = useState<{ status: string; admin_note: string } | null>(null);
-  const [challengeCode] = useState(() => `ZOLA-${Math.floor(1000 + Math.random() * 9000)}`);
+  const [challengeCode] = useState(() => {
+    const prefix = brandName.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 6) || 'ZOLA';
+    return `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+  });
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -92,7 +98,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
         body: form,
       });
       onUpdated(data.user);
-      setMsg(isPrimary ? 'Photo de profil mise à jour.' : 'Photo ajoutée à votre galerie.');
+      setMsg(isPrimary ? t('edit.avatarUpdated') : t('edit.photoAdded'));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Erreur lors de l'envoi de la photo.");
     }
@@ -132,7 +138,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
         }),
       });
       onUpdated(data.user);
-      setMsg('Profil enregistré avec succès.');
+      setMsg(t('edit.savedOk'));
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Erreur de sauvegarde.');
     } finally {
@@ -143,13 +149,13 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="font-display text-2xl font-extrabold text-white">Modifier mon profil</h1>
+        <h1 className="font-display text-2xl font-extrabold text-white">{t('edit.title')}</h1>
         <button
           type="button"
           onClick={onBack}
           className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-medium text-stone-200 hover:bg-white/10"
         >
-          Voir mon profil
+          {t('edit.viewProfile')}
         </button>
       </div>
 
@@ -198,20 +204,20 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                 onClick={() => avatarInputRef.current?.click()}
                 className="text-xs font-medium text-orange-400 hover:text-orange-300"
               >
-                Changer la photo principale
+                {t('edit.changeAvatar')}
               </button>
             </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-stone-300">Galerie photos</span>
+                <span className="text-xs font-semibold text-stone-300">{t('edit.gallery')}</span>
                 <button
                   type="button"
                   onClick={() => galleryInputRef.current?.click()}
                   className="inline-flex items-center gap-1 text-xs text-orange-400 hover:text-orange-300"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Ajouter
+                  {t('edit.addPhoto')}
                 </button>
                 <input
                   ref={galleryInputRef}
@@ -244,22 +250,25 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4 space-y-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-white">Vérification d'identité</span>
+                <span className="text-xs font-semibold text-white">{t('edit.verifTitle')}</span>
                 {user.is_verified ? (
-                  <span className="text-[11px] font-semibold text-sky-400">Vérifié</span>
+                  <span className="text-[11px] font-semibold text-sky-400">{t('edit.verifDone')}</span>
                 ) : verifStatus?.status === 'pending' ? (
-                  <span className="text-[11px] font-semibold text-amber-400">En attente</span>
+                  <span className="text-[11px] font-semibold text-amber-400">{t('edit.verifPending')}</span>
                 ) : null}
               </div>
               {user.is_verified ? (
-                <p className="text-xs text-stone-400">Votre badge de profil vérifié est actif.</p>
+                <p className="text-xs text-stone-400">{t('edit.verifActiveDesc')}</p>
               ) : (
                 <>
                   <p className="text-xs text-stone-400 leading-relaxed">
-                    Envoyez un selfie tenant le code <strong className="font-mono text-amber-300">{challengeCode}</strong> pour obtenir le badge vérifié.
+                    {t('edit.verifCodeHint')} <strong className="font-mono text-amber-300">{challengeCode}</strong>{' '}
+                    {t('edit.verifCodeSuffix')}
                   </p>
                   {verifStatus?.status === 'rejected' && verifStatus.admin_note && (
-                    <p className="text-xs text-red-300">Refus précédent : {verifStatus.admin_note}</p>
+                    <p className="text-xs text-red-300">
+                      {t('edit.verifRejected', { note: verifStatus.admin_note })}
+                    </p>
                   )}
                   <input
                     ref={verifInputRef}
@@ -277,7 +286,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                     onClick={() => verifInputRef.current?.click()}
                     className="w-full rounded-full border border-sky-400/35 bg-sky-400/10 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-400/20 disabled:opacity-50"
                   >
-                    {verifStatus?.status === 'pending' ? 'Demande en cours...' : 'Envoyer mon selfie'}
+                    {verifStatus?.status === 'pending' ? t('edit.verifSending') : t('edit.verifBtn')}
                   </button>
                 </>
               )}
@@ -288,7 +297,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
           <div className="md:col-span-8 space-y-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Nom complet</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.fullName')}</label>
                 <input
                   type="text"
                   required
@@ -298,7 +307,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Date de naissance</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.birthDate')}</label>
                 <input
                   type="date"
                   required
@@ -311,47 +320,47 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Genre</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.gender')}</label>
                 <select
                   value={gender}
                   onChange={(e) => setGender(e.target.value as 'Femme' | 'Homme')}
                   className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3.5 py-2.5 text-sm text-white"
                 >
-                  <option value="Femme">Femme</option>
-                  <option value="Homme">Homme</option>
+                  <option value="Femme">{tGender('Femme')}</option>
+                  <option value="Homme">{tGender('Homme')}</option>
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Genre recherché</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.seeking')}</label>
                 <select
                   value={seekingGender}
                   onChange={(e) => setSeekingGender(e.target.value as 'Homme' | 'Femme' | 'Tous')}
                   className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3.5 py-2.5 text-sm text-white"
                 >
-                  <option value="Homme">Homme</option>
-                  <option value="Femme">Femme</option>
-                  <option value="Tous">Tous</option>
+                  <option value="Homme">{tGender('Homme')}</option>
+                  <option value="Femme">{tGender('Femme')}</option>
+                  <option value="Tous">{tGender('Tous')}</option>
                 </select>
               </div>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Pays</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.country')}</label>
                 <select
                   value={country}
                   onChange={(e) => setCountry(e.target.value)}
                   className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3.5 py-2.5 text-sm text-white"
                 >
-                  {AFRICAN_COUNTRIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
+                  {countries.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {tCountry(c.name)}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Ville</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.city')}</label>
                 <input
                   type="text"
                   required
@@ -364,17 +373,17 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Profession</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.profession')}</label>
                 <input
                   type="text"
                   value={profession}
                   onChange={(e) => setProfession(e.target.value)}
-                  placeholder="Ex: Architecte"
+                  placeholder={t('edit.professionPlaceholder')}
                   className="w-full rounded-xl border border-white/12 bg-white/5 px-3.5 py-2.5 text-sm text-white"
                 />
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Taille (cm)</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.height')}</label>
                 <input
                   type="number"
                   min={120}
@@ -386,16 +395,16 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-xs text-stone-400 mb-1">Signe astrologique</label>
+                <label className="block text-xs text-stone-400 mb-1">{t('edit.zodiac')}</label>
                 <select
                   value={zodiacSign}
                   onChange={(e) => setZodiacSign(e.target.value)}
                   className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3.5 py-2.5 text-sm text-white"
                 >
-                  <option value="">Non précisé</option>
-                  {ZODIAC_SIGNS.map((z) => (
-                    <option key={z} value={z}>
-                      {z}
+                  <option value="">{t('edit.zodiacUnspecified')}</option>
+                  {zodiacSigns.map((z) => (
+                    <option key={z.fr} value={z.fr}>
+                      {tZodiac(z.fr)}
                     </option>
                   ))}
                 </select>
@@ -404,7 +413,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
 
             {/* Interests */}
             <div>
-              <label className="block text-xs text-stone-400 mb-2">Centres d'intérêt</label>
+              <label className="block text-xs text-stone-400 mb-2">{t('edit.interests')}</label>
               <div className="flex flex-wrap gap-2">
                 {interests.map((interest) => {
                   const active = selectedInterests.includes(interest.id);
@@ -420,7 +429,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                       }`}
                     >
                       {active && <Check className="h-3 w-3" />}
-                      {interest.name}
+                      {tInterest(interest.name)}
                     </button>
                   );
                 })}
@@ -428,12 +437,12 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs text-stone-400 mb-1">À propos de moi</label>
+              <label className="block text-xs text-stone-400 mb-1">{t('edit.aboutMe')}</label>
               <textarea
                 rows={4}
                 value={bio}
                 onChange={(e) => setBio(e.target.value)}
-                placeholder="Parlez de vous, de vos passions et de ce que vous recherchez..."
+                placeholder={t('edit.aboutPlaceholder')}
                 className="w-full rounded-xl border border-white/12 bg-white/5 px-3.5 py-2.5 text-sm text-white"
               />
             </div>
@@ -444,7 +453,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                 disabled={saving}
                 className="zola-gradient zola-gradient-hover rounded-full px-7 py-3 text-sm font-semibold text-white shadow-lg shadow-orange-600/25 disabled:opacity-60"
               >
-                {saving ? 'Enregistrement...' : 'Enregistrer les modifications'}
+                {saving ? t('edit.saving') : t('edit.saveBtn')}
               </button>
             </div>
           </div>
@@ -469,6 +478,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onLogout,
   onDeleted,
 }) => {
+  const { lang, t, cmsSettings } = useI18n();
   const [section, setSection] = useState<
     'notifications' | 'confidentialite' | 'preferences' | 'aide' | 'apropos'
   >('notifications');
@@ -526,7 +536,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       onUpdated(res.user);
       setTotpSetup(null);
       setTotpCode('');
-      setFeedback('Authentification à deux facteurs (2FA) activée.');
+      setFeedback(t('settings.2faEnabledMsg'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Code 2FA invalide.');
     }
@@ -542,31 +552,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       });
       onUpdated(res.user);
       setTotpCode('');
-      setFeedback('Authentification à deux facteurs (2FA) désactivée.');
+      setFeedback(t('settings.2faDisabledMsg'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Code 2FA invalide.');
     }
   };
 
   const handleRevokeSession = async (sessionId: string) => {
-    await apiFetch(`/api/settings/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
-    setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
-    setFeedback('Session révoquée.');
+    setError('');
+    try {
+      await apiFetch(`/api/settings/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+      setFeedback(t('settings.sessionsRevokedMsg'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Impossible de révoquer cette session.');
+    }
   };
 
   const saveToggles = async (nextMsg: boolean, nextMatch: boolean, nextVisible: boolean) => {
     setFeedback('');
     setError('');
-    const data = await apiFetch<{ user: UserProfile }>('/api/settings', {
-      method: 'PUT',
-      body: JSON.stringify({
-        notify_messages: nextMsg,
-        notify_matches: nextMatch,
-        profile_visible: nextVisible,
-      }),
-    });
-    onUpdated(data.user);
-    setFeedback('Paramètres enregistrés.');
+    try {
+      const data = await apiFetch<{ user: UserProfile }>('/api/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          notify_messages: nextMsg,
+          notify_matches: nextMatch,
+          profile_visible: nextVisible,
+        }),
+      });
+      onUpdated(data.user);
+      setFeedback(t('settings.saved'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Impossible d’enregistrer les préférences.');
+    }
   };
 
   const handlePasswordChange = async (e: React.FormEvent) => {
@@ -619,7 +638,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm text-stone-300 hover:bg-white/5 hover:text-white"
           >
             <User className="h-4 w-4 text-orange-400" />
-            Mon profil
+            {t('settings.nav.profile')}
           </button>
           <button
             type="button"
@@ -629,7 +648,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             <Bell className="h-4 w-4 text-orange-400" />
-            Notifications
+            {t('settings.nav.notifications')}
           </button>
           <button
             type="button"
@@ -639,7 +658,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             <Shield className="h-4 w-4 text-orange-400" />
-            Confidentialité
+            {t('settings.nav.privacy')}
           </button>
           <button
             type="button"
@@ -649,7 +668,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             <Sliders className="h-4 w-4 text-orange-400" />
-            Préférences & Sécurité
+            {t('settings.nav.prefs')}
           </button>
           <button
             type="button"
@@ -659,7 +678,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             <HelpCircle className="h-4 w-4 text-orange-400" />
-            Aide & Support
+            {t('settings.nav.help')}
           </button>
           <button
             type="button"
@@ -669,7 +688,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             <Info className="h-4 w-4 text-orange-400" />
-            À propos
+            {t('settings.nav.about')}
           </button>
         </nav>
 
@@ -680,14 +699,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium text-red-400 hover:bg-red-500/10"
           >
             <LogOut className="h-4 w-4" />
-            Se déconnecter
+            {t('settings.nav.logout')}
           </button>
         </div>
       </div>
 
       {/* Settings Content */}
       <div className="md:col-span-8 p-6 sm:p-8 space-y-6">
-        <h1 className="font-display text-2xl font-extrabold text-white">Paramètres</h1>
+        <h1 className="font-display text-2xl font-extrabold text-white">{t('settings.title')}</h1>
 
         {feedback && (
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
@@ -704,8 +723,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 p-4">
               <div>
-                <p className="font-medium text-white">Notifications de Match</p>
-                <p className="text-xs text-stone-400">Recevoir une alerte lors d'un nouveau Match ou J'aime.</p>
+                <p className="font-medium text-white">{t('settings.notifMatchTitle')}</p>
+                <p className="text-xs text-stone-400">{t('settings.notifMatchDesc')}</p>
               </div>
               <input
                 type="checkbox"
@@ -720,8 +739,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 p-4">
               <div>
-                <p className="font-medium text-white">Notifications de nouveaux messages</p>
-                <p className="text-xs text-stone-400">Être notifié lorsqu'un correspondant vous écrit.</p>
+                <p className="font-medium text-white">{t('settings.notifMsgTitle')}</p>
+                <p className="text-xs text-stone-400">{t('settings.notifMsgDesc')}</p>
               </div>
               <input
                 type="checkbox"
@@ -740,10 +759,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 p-4">
               <div>
-                <p className="font-medium text-white">Mon profil est visible par tous</p>
-                <p className="text-xs text-stone-400">
-                  Désactivez cette option pour masquer temporairement votre profil dans l'espace Découverte.
-                </p>
+                <p className="font-medium text-white">{t('settings.visibilityTitle')}</p>
+                <p className="text-xs text-stone-400">{t('settings.visibilityDesc')}</p>
               </div>
               <input
                 type="checkbox"
@@ -760,17 +777,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {section === 'preferences' && (
           <div className="space-y-6">
+            {/* Interface Language Card */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="font-semibold text-white">{t('settings.langCardTitle')}</p>
+                <p className="text-xs text-stone-400 mt-0.5">{t('settings.langCardDesc')}</p>
+              </div>
+              <LanguageToggle />
+            </div>
+
             <form onSubmit={handlePasswordChange} className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-4">
               <div className="flex items-center gap-2 text-white font-semibold">
                 <Lock className="h-4 w-4 text-orange-400" />
-                Modifier le mot de passe
+                {t('settings.passTitle')}
               </div>
               <input
                 type="password"
                 required
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Mot de passe actuel"
+                placeholder={t('settings.passCurrent')}
                 className="w-full rounded-xl border border-white/12 bg-black/30 px-3.5 py-2.5 text-sm text-white"
               />
               <input
@@ -779,11 +805,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 minLength={8}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Nouveau mot de passe (8 caractères min.)"
+                placeholder={t('settings.passNew')}
                 className="w-full rounded-xl border border-white/12 bg-black/30 px-3.5 py-2.5 text-sm text-white"
               />
               <button type="submit" className="zola-gradient rounded-full px-5 py-2 text-sm font-semibold text-white">
-                Mettre à jour
+                {t('settings.passUpdate')}
               </button>
             </form>
 
@@ -792,7 +818,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-white font-semibold">
                   <KeyRound className="h-4 w-4 text-amber-400" />
-                  Authentification à deux facteurs (2FA TOTP)
+                  {t('settings.2faTitle')}
                 </div>
                 <span
                   className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
@@ -801,15 +827,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       : 'bg-white/5 text-stone-400 border border-white/10'
                   }`}
                 >
-                  {user.two_factor_enabled ? 'Activée' : 'Désactivée'}
+                  {user.two_factor_enabled ? t('settings.2faOn') : t('settings.2faOff')}
                 </span>
               </div>
 
               {user.two_factor_enabled ? (
                 <form onSubmit={handleDisable2FA} className="space-y-3">
-                  <p className="text-xs text-stone-400">
-                    Votre compte est protégé par TOTP. Entrez un code actuel de votre application pour désactiver la 2FA.
-                  </p>
+                  <p className="text-xs text-stone-400">{t('settings.2faDisableDesc')}</p>
                   <div className="flex flex-wrap gap-2">
                     <input
                       type="text"
@@ -818,22 +842,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       required
                       value={totpCode}
                       onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="Code à 6 chiffres"
+                      placeholder={t('settings.2faCodePlaceholder')}
                       className="rounded-xl border border-white/12 bg-black/30 px-3.5 py-2 text-sm font-mono text-white w-44"
                     />
                     <button
                       type="submit"
                       className="rounded-full border border-red-500/40 bg-red-500/15 px-4 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/25"
                     >
-                      Désactiver la 2FA
+                      {t('settings.2faDisableBtn')}
                     </button>
                   </div>
                 </form>
               ) : totpSetup ? (
                 <form onSubmit={handleEnable2FA} className="space-y-3">
-                  <p className="text-xs text-stone-300 leading-relaxed">
-                    Ajoutez cette clé secrète dans Google Authenticator, Authy ou 1Password :
-                  </p>
+                  <p className="text-xs text-stone-300 leading-relaxed">{t('settings.2faSetupHint')}</p>
                   <div className="rounded-xl border border-amber-400/30 bg-black/40 p-3 space-y-1">
                     <p className="font-mono text-sm font-bold tracking-wider text-amber-300 select-all">
                       {totpSetup.secret}
@@ -848,25 +870,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       required
                       value={totpCode}
                       onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="Code de vérification (6 chiffres)"
+                      placeholder={t('settings.2faVerifyPlaceholder')}
                       className="rounded-xl border border-white/12 bg-black/30 px-3.5 py-2 text-sm font-mono text-white w-56"
                     />
                     <button type="submit" className="zola-gradient rounded-full px-5 py-2 text-xs font-semibold text-white">
-                      Activer la 2FA
+                      {t('settings.2faEnableBtn')}
                     </button>
                   </div>
                 </form>
               ) : (
                 <div className="space-y-3">
-                  <p className="text-xs text-stone-400">
-                    Ajoutez une seconde couche de sécurité via code TOTP à 6 chiffres à chaque connexion.
-                  </p>
+                  <p className="text-xs text-stone-400">{t('settings.2faPromo')}</p>
                   <button
                     type="button"
                     onClick={handleSetup2FA}
                     className="rounded-full border border-amber-400/35 bg-amber-400/10 px-4 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-400/20"
                   >
-                    Configurer la 2FA
+                    {t('settings.2faSetupBtn')}
                   </button>
                 </div>
               )}
@@ -876,10 +896,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-3">
               <div className="flex items-center gap-2 text-white font-semibold">
                 <Laptop className="h-4 w-4 text-orange-400" />
-                Sessions actives ({sessions.length})
+                {t('settings.sessionsTitle', { count: sessions.length })}
               </div>
               {sessions.length === 0 ? (
-                <p className="text-xs text-stone-400">Aucune autre session enregistrée.</p>
+                <p className="text-xs text-stone-400">{t('settings.sessionsEmpty')}</p>
               ) : (
                 <div className="space-y-2">
                   {sessions.map((s) => (
@@ -890,12 +910,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <div className="min-w-0 flex-1">
                         <p className="text-white font-medium truncate">{s.user_agent}</p>
                         <p className="text-stone-400 tabular-nums">
-                          IP : {s.ip_address} · Activité : {s.last_active_at}
+                          {t('settings.sessionsActivity', { ip: s.ip_address, date: s.last_active_at })}
                         </p>
                       </div>
                       {s.is_current ? (
                         <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
-                          Session actuelle
+                          {t('settings.sessionsCurrent')}
                         </span>
                       ) : (
                         <button
@@ -903,7 +923,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           onClick={() => handleRevokeSession(s.session_id)}
                           className="rounded-full border border-red-500/30 px-3 py-1 text-red-300 hover:bg-red-500/15"
                         >
-                          Révoquer
+                          {t('settings.sessionsRevoke')}
                         </button>
                       )}
                     </div>
@@ -913,23 +933,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <form onSubmit={handleDeleteAccount} className="rounded-2xl border border-red-500/25 bg-red-500/5 p-5 space-y-3">
-              <p className="font-semibold text-red-300">Supprimer mon compte définitivement</p>
-              <p className="text-xs text-stone-400">
-                Cette action supprime votre profil, vos matchs et vos conversations de la base de données.
-              </p>
+              <p className="font-semibold text-red-300">{t('settings.deleteTitle')}</p>
+              <p className="text-xs text-stone-400">{t('settings.deleteDesc')}</p>
               <input
                 type="password"
                 required
                 value={deletePassword}
                 onChange={(e) => setDeletePassword(e.target.value)}
-                placeholder="Confirmez avec votre mot de passe"
+                placeholder={t('settings.deletePlaceholder')}
                 className="w-full rounded-xl border border-red-500/25 bg-black/30 px-3.5 py-2.5 text-sm text-white"
               />
               <button
                 type="submit"
                 className="rounded-full bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-500"
               >
-                Supprimer le compte
+                {t('settings.deleteBtn')}
               </button>
             </form>
           </div>
@@ -937,21 +955,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {section === 'aide' && (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-3 text-sm text-stone-300">
-            <h2 className="font-display font-bold text-white">Aide et Support ZOLA</h2>
-            <p>
-              Pour toute question concernant la sécurité, un paiement Mobile Money ou une demande de vérification de profil, contactez notre équipe via support@zola.africa.
+            <h2 className="font-display font-bold text-white">{t('settings.helpTitle')}</h2>
+            <p>{t('settings.helpP1')}</p>
+            <p className="text-xs text-amber-300">
+              <a href={`mailto:${cmsSettings.support_email || 'support@zola.africa'}`} className="hover:underline">
+                {cmsSettings.support_email || 'support@zola.africa'}
+              </a>
             </p>
-            <p className="text-xs text-stone-400">
-              Astuce : vous pouvez signaler ou bloquer un comportement inapproprié directement depuis le profil du membre ou la messagerie.
-            </p>
+            <p className="text-xs text-stone-400">{t('settings.helpP2')}</p>
           </div>
         )}
 
         {section === 'apropos' && (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-2 text-sm text-stone-300">
-            <h2 className="font-display font-bold text-white">À propos de ZOLA</h2>
-            <p>
-              ZOLA (« Ensemble, trouvons l'amour ») est une plateforme dédiée aux rencontres africaines authentiques, conçue pour relier les cœurs entre les grandes villes d'Afrique et sa diaspora.
+            <h2 className="font-display font-bold text-white">{t('settings.aboutTitle')}</h2>
+            <p className="whitespace-pre-line">
+              {(lang === 'en' ? cmsSettings.about_text_en : cmsSettings.about_text_fr) || t('settings.aboutP1')}
             </p>
           </div>
         )}
@@ -971,26 +990,25 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   onMarkAllRead,
   onViewProfile,
 }) => {
+  const { t } = useI18n();
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="font-display text-2xl font-extrabold text-white">Notifications</h1>
+        <h1 className="font-display text-2xl font-extrabold text-white">{t('notif.title')}</h1>
         {notifications.some((n) => !n.is_read) && (
           <button
             type="button"
             onClick={onMarkAllRead}
             className="text-xs font-medium text-orange-400 hover:text-orange-300"
           >
-            Tout marquer comme lu
+            {t('notif.markAllRead')}
           </button>
         )}
       </div>
 
       <div className="zola-card rounded-3xl divide-y divide-white/8 overflow-hidden">
         {notifications.length === 0 ? (
-          <div className="p-10 text-center text-sm text-stone-400">
-            Aucune notification pour le moment.
-          </div>
+          <div className="p-10 text-center text-sm text-stone-400">{t('notif.empty')}</div>
         ) : (
           notifications.map((n) => (
             <div

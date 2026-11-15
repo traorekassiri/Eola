@@ -182,6 +182,7 @@ export interface SiteSettings {
   oauth_facebook_enabled: string;
   oauth_apple_enabled: string;
   payment_provider_label: string;
+  [key: string]: string;
 }
 
 export interface MonthlySignupPoint {
@@ -228,3 +229,20 @@ export interface AdminStats {
   pending_reports: number;
   pending_verifications: number;
 }
+
+export interface RegisterPrefill {
+  gender?: 'Femme' | 'Homme';
+  seeking_gender?: 'Homme' | 'Femme' | 'Tous';
+  country?: string;
+  city?: string;
+}
+
+export interface PublicProfilePreview {
+  first_name: string;
+  age: number;
+  city: string;
+  country: string;
+  is_verified: boolean;
+  avatar_url: string;
+}
+

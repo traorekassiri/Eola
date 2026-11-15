@@ -7,15 +7,35 @@
     --font-mono: 'JetBrains Mono', monospace;
   }
 
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+    overflow-x: clip;
+    max-width: 100%;
+    overscroll-behavior-x: none;
+  }
+
   body {
     font-family: var(--font-body);
     background-color: #0B0909;
     color: #F5F2EE;
-    overflow-x: hidden;
+    overflow-x: clip;
+    max-width: 100%;
+    overscroll-behavior-x: none;
+    overscroll-behavior-y: none;
+  }
+
+  #root {
+    overflow-x: clip;
+    max-width: 100%;
   }
 
   h1, h2, h3, h4, .font-display {
     font-family: var(--font-display);
+  }
+
+  button, a, select, input, textarea {
+    touch-action: manipulation;
   }
 }
 
@@ -39,6 +59,19 @@
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Custom dark scrollbar */

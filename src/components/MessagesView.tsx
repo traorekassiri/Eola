@@ -18,12 +18,13 @@ import {
   Video,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import {
-  AFRICAN_STICKERS,
   getStickerDataUrl,
   stickerToPngFile,
   type CulturalSticker,
 } from '../lib/africanStickers';
+import { resolveStickersFromSettings } from '../lib/cms';
 import type { ConversationSummary, MessageItem, MessageReaction, UserProfile } from '../types';
 
 export interface WsSignalEvent {
@@ -44,11 +45,6 @@ interface MessagesViewProps {
 
 const EMOJI_LIST = ['😊', '❤️', '🔥', '😍', '👋', '🌹', '✨', '😂', '🥰', '🙏'];
 const REACTION_EMOJIS = ['❤️', '😊', '🔥', '😂', '👏', '🙏'];
-const ICEBREAKERS = [
-  "Salut ! J'adore ton profil, quel est ton endroit préféré dans ta ville ?",
-  'Plutôt café du matin ou balade au coucher du soleil ?',
-  'Quelle chanson ou quel artiste écoutes-tu en boucle en ce moment ?',
-];
 
 export const MessagesView: React.FC<MessagesViewProps> = ({
   currentUser,
@@ -60,6 +56,9 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   wsSignalEvent,
   sendWsEvent,
 }) => {
+  const { lang, t, locale, tStickerOrigin, tReportReason, cmsSettings, icebreakers: cmsIcebreakers, reportReasons } = useI18n();
+  const icebreakers = cmsIcebreakers.map((item) => (lang === 'en' ? item.en || item.fr : item.fr));
+  const stickers = resolveStickersFromSettings(cmsSettings);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConvId, setActiveConvId] = useState<number | null>(initialConversationId);
   const [messages, setMessages] = useState<MessageItem[]>([]);
@@ -103,22 +102,30 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   const typingTimeoutRef = useRef<number | null>(null);
 
   const loadConversations = useCallback(async () => {
-    const data = await apiFetch<{ conversations: ConversationSummary[] }>('/api/messages/conversations');
-    setConversations(data.conversations);
-    if (!activeConvId && initialConversationId) {
-      setActiveConvId(initialConversationId);
-    } else if (!activeConvId && data.conversations.length > 0 && window.innerWidth >= 768) {
-      setActiveConvId(data.conversations[0].id);
+    try {
+      const data = await apiFetch<{ conversations: ConversationSummary[] }>('/api/messages/conversations');
+      setConversations(data.conversations);
+      if (!activeConvId && initialConversationId) {
+        setActiveConvId(initialConversationId);
+      } else if (!activeConvId && data.conversations.length > 0 && window.innerWidth >= 768) {
+        setActiveConvId(data.conversations[0].id);
+      }
+    } catch (err) {
+      setCallError(err instanceof Error ? err.message : 'Impossible de charger les conversations.');
     }
   }, [activeConvId, initialConversationId]);
 
   const loadMessages = useCallback(
     async (convId: number) => {
-      const data = await apiFetch<{ messages: MessageItem[] }>(`/api/messages/conversations/${convId}`);
-      setMessages(data.messages);
-      setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)));
-      onConversationsChanged();
-      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+      try {
+        const data = await apiFetch<{ messages: MessageItem[] }>(`/api/messages/conversations/${convId}`);
+        setMessages(data.messages);
+        setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)));
+        onConversationsChanged();
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+      } catch (err) {
+        setCallError(err instanceof Error ? err.message : 'Impossible de charger les messages.');
+      }
     },
     [onConversationsChanged]
   );
@@ -335,7 +342,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       setRecordSeconds(0);
       recordTimerRef.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000);
     } catch {
-      setCallError("Microphone inaccessible. Vérifiez les permissions du navigateur.");
+      setCallError(t('msg.micDenied'));
     }
   };
 
@@ -378,7 +385,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       setCallState('calling');
       sendWsEvent('call:offer', { conversationId: activeConvId, sdp: offer, mode });
     } catch {
-      setCallError("Impossible d'accéder au microphone ou à la caméra pour démarrer l'appel.");
+      setCallError(t('msg.mediaDenied'));
       cleanupCall();
     }
   };
@@ -399,7 +406,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       setCallState('connected');
       sendWsEvent('call:answer', { conversationId: convId, sdp: answer });
     } catch {
-      setCallError("Permission microphone/caméra refusée.");
+      setCallError(t('msg.permDenied'));
       cleanupCall();
     }
   };
@@ -413,37 +420,48 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   };
 
   const handleBlock = async (partnerId: number) => {
-    const res = await apiFetch<{ conversations?: ConversationSummary[] }>(`/api/users/${partnerId}/block`, {
-      method: 'POST',
-    });
-    setMenuOpen(false);
-    setActiveConvId(null);
-    setMessages([]);
-    if (Array.isArray(res.conversations)) {
-      setConversations(res.conversations);
-    } else {
-      await loadConversations();
+    try {
+      const res = await apiFetch<{ conversations?: ConversationSummary[] }>(`/api/users/${partnerId}/block`, {
+        method: 'POST',
+      });
+      setMenuOpen(false);
+      setActiveConvId(null);
+      setMessages([]);
+      if (Array.isArray(res.conversations)) {
+        setConversations(res.conversations);
+      } else {
+        await loadConversations();
+      }
+      onConversationsChanged();
+    } catch (err) {
+      setMenuOpen(false);
+      setCallError(err instanceof Error ? err.message : 'Impossible de bloquer ce profil.');
     }
-    onConversationsChanged();
   };
 
   const handleReportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeConversation) return;
-    await apiFetch(`/api/users/${activeConversation.partner.id}/report`, {
-      method: 'POST',
-      body: JSON.stringify({ reason: reportReason, details: 'Signalé depuis la messagerie' }),
-    });
-    setReportOpen(false);
-    setMenuOpen(false);
-    setCallError('Signalement transmis à notre équipe de modération.');
+    try {
+      await apiFetch(`/api/users/${activeConversation.partner.id}/report`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reportReason, details: 'Signalé depuis la messagerie' }),
+      });
+      setReportOpen(false);
+      setMenuOpen(false);
+      setCallError(t('msg.reportSent'));
+    } catch (err) {
+      setReportOpen(false);
+      setMenuOpen(false);
+      setCallError(err instanceof Error ? err.message : 'Impossible d’envoyer le signalement.');
+    }
   };
 
   const formatTime = (iso: string | null) => {
     if (!iso) return '';
     const d = new Date(iso.replace(' ', 'T') + (iso.includes('Z') ? '' : 'Z'));
     if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
   };
 
   return (
@@ -455,8 +473,10 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       >
         <div className="p-4 border-b border-white/8 space-y-3">
           <div className="flex items-center justify-between">
-            <h1 className="font-display text-2xl font-extrabold text-orange-400">Messages</h1>
-            <span className="text-xs text-stone-400 tabular-nums">{conversations.length} discussion(s)</span>
+            <h1 className="font-display text-2xl font-extrabold text-orange-400">{t('msg.title')}</h1>
+            <span className="text-xs text-stone-400 tabular-nums">
+              {t('msg.discussions', { count: conversations.length })}
+            </span>
           </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
@@ -464,7 +484,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Rechercher une conversation..."
+              placeholder={t('msg.searchPlaceholder')}
               className="w-full rounded-xl border border-white/10 bg-white/5 pl-9 pr-3 py-2 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
             />
           </div>
@@ -472,9 +492,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
 
         <div className="flex-1 overflow-y-auto divide-y divide-white/5">
           {filteredConvs.length === 0 ? (
-            <div className="p-8 text-center text-sm text-stone-400">
-              Aucun Match pour le moment. Aimez des profils dans Découvrir pour démarrer une conversation !
-            </div>
+            <div className="p-8 text-center text-sm text-stone-400">{t('msg.noMatches')}</div>
           ) : (
             filteredConvs.map((conv) => (
               <button
@@ -508,10 +526,10 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                     <p className="text-xs text-stone-400 truncate">
                       {conv.last_message ||
                         (conv.last_message_audio
-                          ? 'Message vocal'
+                          ? t('msg.voiceNote')
                           : conv.last_message_image
-                            ? 'Photo envoyée'
-                            : 'Nouveau Match ! Dites bonjour')}
+                            ? t('msg.photoSent')
+                            : t('msg.newMatchHello'))}
                     </p>
                     {conv.unread_count > 0 && (
                       <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-orange-500 px-1.5 text-[11px] font-bold text-white tabular-nums">
@@ -533,8 +551,8 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       >
         {!activeConversation ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-stone-400">
-            <p className="font-display text-lg font-semibold text-white">Sélectionnez une conversation</p>
-            <p className="mt-1 text-sm">Vos échanges privés sont accessibles uniquement aux participants du Match.</p>
+            <p className="font-display text-lg font-semibold text-white">{t('msg.selectConv')}</p>
+            <p className="mt-1 text-sm">{t('msg.selectConvSub')}</p>
           </div>
         ) : (
           <>
@@ -563,10 +581,10 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                     </p>
                     <p className="text-xs text-emerald-400">
                       {partnerTyping
-                        ? "en train d'écrire..."
+                        ? t('msg.typing')
                         : activeConversation.partner.is_online
-                          ? 'En ligne'
-                          : 'Hors ligne'}
+                          ? t('common.online')
+                          : t('common.offline')}
                     </p>
                   </div>
                 </button>
@@ -575,7 +593,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
               <div className="relative flex items-center gap-1.5">
                 <button
                   type="button"
-                  title="Appel audio"
+                  title={t('msg.audioCall')}
                   onClick={() => startCall('audio')}
                   className="flex h-9 w-9 items-center justify-center rounded-full text-stone-300 hover:bg-white/10 hover:text-white"
                 >
@@ -583,7 +601,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  title="Appel vidéo"
+                  title={t('msg.videoCall')}
                   onClick={() => startCall('video')}
                   className="flex h-9 w-9 items-center justify-center rounded-full text-stone-300 hover:bg-white/10 hover:text-white"
                 >
@@ -606,21 +624,21 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                       }}
                       className="block w-full px-4 py-2 text-left text-xs text-stone-200 hover:bg-white/5"
                     >
-                      Voir le profil
+                      {t('msg.viewProfile')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setReportOpen(true)}
                       className="block w-full px-4 py-2 text-left text-xs text-amber-300 hover:bg-white/5"
                     >
-                      Signaler ce membre
+                      {t('msg.reportMember')}
                     </button>
                     <button
                       type="button"
                       onClick={() => handleBlock(activeConversation.partner.id)}
                       className="block w-full px-4 py-2 text-left text-xs text-red-400 hover:bg-red-500/10"
                     >
-                      Bloquer ce membre
+                      {t('msg.blockMember')}
                     </button>
                   </div>
                 )}
@@ -631,7 +649,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
               <div className="flex items-center justify-between bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-xs text-amber-200">
                 <span>{callError}</span>
                 <button type="button" onClick={() => setCallError('')} className="underline ml-3">
-                  Fermer
+                  {t('common.close')}
                 </button>
               </div>
             )}
@@ -641,10 +659,10 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                 <div className="rounded-2xl border border-orange-500/20 bg-orange-500/5 p-4 space-y-3 text-center">
                   <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-orange-300">
                     <Sparkles className="h-3.5 w-3.5" />
-                    Briser la glace avec {activeConversation.partner.first_name}
+                    {t('msg.icebreakerTitle', { name: activeConversation.partner.first_name })}
                   </div>
                   <div className="flex flex-wrap justify-center gap-2">
-                    {ICEBREAKERS.map((prompt) => (
+                    {icebreakers.map((prompt) => (
                       <button
                         key={prompt}
                         type="button"
@@ -674,7 +692,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                         {msg.image_url && (
                           <img
                             src={msg.image_url}
-                            alt="Pièce jointe"
+                            alt=""
                             className={`max-h-56 w-auto rounded-xl object-contain ${msg.content ? 'mb-2' : 'mb-1'}`}
                           />
                         )}
@@ -697,7 +715,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                         <button
                           type="button"
                           onClick={() => setReactMenuMsgId(reactMenuMsgId === msg.id ? null : msg.id)}
-                          aria-label="Réagir"
+                          aria-label={t('msg.react')}
                           className="opacity-0 group-hover:opacity-100 focus:opacity-100 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10 transition-opacity"
                         >
                           <Smile className="h-3.5 w-3.5" />
@@ -769,24 +787,24 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-display font-bold text-amber-300 flex items-center gap-1.5">
                       <Sparkles className="h-3.5 w-3.5" />
-                      Stickers culturels africains
+                      {t('msg.stickersTitle')}
                     </span>
                     <button
                       type="button"
                       onClick={() => setShowStickers(false)}
                       className="text-stone-400 hover:text-white"
                     >
-                      Fermer
+                      {t('common.close')}
                     </button>
                   </div>
                   <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
-                    {AFRICAN_STICKERS.map((st) => (
+                    {stickers.map((st) => (
                       <button
                         key={st.id}
                         type="button"
                         disabled={sending}
                         onClick={() => handleSendSticker(st)}
-                        title={`${st.label} — ${st.origin}`}
+                        title={`${st.label} — ${lang === 'en' ? st.origin_en || tStickerOrigin(st.origin) : st.origin}`}
                         className="group flex flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 p-1.5 hover:border-amber-400/60 hover:bg-amber-400/10 transition-all disabled:opacity-50"
                       >
                         <img
@@ -805,9 +823,9 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
 
               {imageFile && (
                 <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-1.5 text-xs text-stone-300">
-                  <span className="truncate">Image prête : {imageFile.name}</span>
+                  <span className="truncate">{t('msg.imageReady', { name: imageFile.name })}</span>
                   <button type="button" onClick={() => setImageFile(null)} className="text-red-400 ml-2">
-                    Retirer
+                    {t('msg.remove')}
                   </button>
                 </div>
               )}
@@ -823,7 +841,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  title="Envoyer une photo"
+                  title={t('msg.sendPhotoTitle')}
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-stone-300 hover:text-white"
                 >
                   <ImagePlus className="h-4 w-4" />
@@ -834,8 +852,8 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                     setShowStickers((v) => !v);
                     setShowEmojis(false);
                   }}
-                  title="Stickers culturels"
-                  aria-label="Stickers culturels"
+                  title={t('msg.stickersBtnTitle')}
+                  aria-label={t('msg.stickersBtnTitle')}
                   className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors ${
                     showStickers
                       ? 'border-amber-400/60 bg-amber-400/15 text-amber-300'
@@ -850,7 +868,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                     setShowEmojis((v) => !v);
                     setShowStickers(false);
                   }}
-                  title="Émoticônes"
+                  title={t('msg.emojisBtnTitle')}
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-stone-300 hover:text-white"
                 >
                   <Smile className="h-4 w-4" />
@@ -858,14 +876,14 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
 
                 {recording ? (
                   <div className="flex flex-1 items-center justify-between rounded-full border border-red-500/40 bg-red-500/10 px-4 py-2 text-xs text-red-200">
-                    <span className="tabular-nums">Enregistrement vocal... {recordSeconds}s</span>
+                    <span className="tabular-nums">{t('msg.recording', { seconds: recordSeconds })}</span>
                     <button
                       type="button"
                       onClick={stopRecording}
                       className="inline-flex items-center gap-1 rounded-full bg-red-600 px-3 py-1 text-white font-semibold"
                     >
                       <Square className="h-3 w-3 fill-white" />
-                      Envoyer
+                      {t('common.send')}
                     </button>
                   </div>
                 ) : (
@@ -874,13 +892,13 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                       type="text"
                       value={text}
                       onChange={(e) => handleTyping(e.target.value)}
-                      placeholder="Écrire un message..."
+                      placeholder={t('msg.inputPlaceholder')}
                       className="flex-1 rounded-full border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                     <button
                       type="button"
                       onClick={startRecording}
-                      title="Message vocal"
+                      title={t('msg.voiceBtnTitle')}
                       className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-stone-300 hover:text-white"
                     >
                       <Mic className="h-4 w-4" />
@@ -888,7 +906,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                     <button
                       type="submit"
                       disabled={sending}
-                      aria-label="Envoyer"
+                      aria-label={t('common.send')}
                       className="zola-gradient zola-gradient-hover flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white shadow-md shadow-orange-600/30 disabled:opacity-50"
                     >
                       <Send className="h-4 w-4" />
@@ -906,9 +924,11 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
           <div className="zola-card w-full max-w-md rounded-3xl p-6 text-center space-y-5">
             <h3 className="font-display text-xl font-bold text-white">
-              {callState === 'calling' && `Appel ${callMode === 'video' ? 'vidéo' : 'audio'} en cours...`}
-              {callState === 'incoming' && `Appel ${callMode === 'video' ? 'vidéo' : 'audio'} entrant`}
-              {callState === 'connected' && 'Communication active'}
+              {callState === 'calling' &&
+                (callMode === 'video' ? t('msg.call.callingVideo') : t('msg.call.callingAudio'))}
+              {callState === 'incoming' &&
+                (callMode === 'video' ? t('msg.call.incomingVideo') : t('msg.call.incomingAudio'))}
+              {callState === 'connected' && t('msg.call.connected')}
             </h3>
 
             {callMode === 'video' && (
@@ -932,14 +952,14 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                     onClick={acceptIncomingCall}
                     className="rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold text-white"
                   >
-                    Répondre
+                    {t('msg.call.answer')}
                   </button>
                   <button
                     type="button"
                     onClick={endOrRejectCall}
                     className="rounded-full bg-red-600 px-6 py-3 text-sm font-semibold text-white"
                   >
-                    Refuser
+                    {t('msg.call.decline')}
                   </button>
                 </>
               ) : (
@@ -947,8 +967,8 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      localStreamRef.current?.getAudioTracks().forEach((t) => {
-                        t.enabled = muted;
+                      localStreamRef.current?.getAudioTracks().forEach((tr) => {
+                        tr.enabled = muted;
                       });
                       setMuted((m) => !m);
                     }}
@@ -974,15 +994,17 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       {reportOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
           <form onSubmit={handleReportSubmit} className="zola-card w-full max-w-sm rounded-2xl p-6 space-y-4">
-            <h3 className="font-display text-lg font-bold text-white">Signaler ce membre</h3>
+            <h3 className="font-display text-lg font-bold text-white">{t('msg.reportMember')}</h3>
             <select
               value={reportReason}
               onChange={(e) => setReportReason(e.target.value)}
               className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3 py-2 text-sm text-white"
             >
-              <option value="Comportement inapproprié">Comportement inapproprié</option>
-              <option value="Harcèlement ou arnaque">Harcèlement ou arnaque</option>
-              <option value="Profil suspect ou faux">Profil suspect ou faux</option>
+              {reportReasons.map((r) => (
+                <option key={r.fr} value={r.fr}>
+                  {tReportReason(r.fr)}
+                </option>
+              ))}
             </select>
             <div className="flex justify-end gap-2">
               <button
@@ -990,10 +1012,10 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                 onClick={() => setReportOpen(false)}
                 className="rounded-full border border-white/15 px-4 py-2 text-xs text-stone-300"
               >
-                Annuler
+                {t('common.cancel')}
               </button>
               <button type="submit" className="zola-gradient rounded-full px-4 py-2 text-xs font-semibold text-white">
-                Envoyer
+                {t('common.send')}
               </button>
             </div>
           </form>

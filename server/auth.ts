@@ -47,16 +47,12 @@ export function createSessionCookie(
   return { cookieValue: `${encoded}.${sig}`, csrfToken, maxAgeMs, sessionId };
 }
 
-export function parseSessionCookie(cookieHeader: string | undefined): AuthSession | null {
-  if (!cookieHeader) return null;
-  const pairs = cookieHeader.split(';').map((p) => p.trim());
-  const sessionPair = pairs.find((p) => p.startsWith('zola_session='));
-  if (!sessionPair) return null;
-  const raw = decodeURIComponent(sessionPair.slice('zola_session='.length));
-  const dotIdx = raw.indexOf('.');
+export function verifySessionToken(rawToken: string | undefined): AuthSession | null {
+  if (!rawToken) return null;
+  const dotIdx = rawToken.indexOf('.');
   if (dotIdx <= 0) return null;
-  const encoded = raw.slice(0, dotIdx);
-  const sig = raw.slice(dotIdx + 1);
+  const encoded = rawToken.slice(0, dotIdx);
+  const sig = rawToken.slice(dotIdx + 1);
   const expectedSig = signToken(encoded);
   const sigBuf = Buffer.from(sig);
   const expBuf = Buffer.from(expectedSig);
@@ -82,8 +78,28 @@ export function parseSessionCookie(cookieHeader: string | undefined): AuthSessio
   }
 }
 
+export function parseSessionCookie(cookieHeader: string | undefined): AuthSession | null {
+  if (!cookieHeader) return null;
+  const pairs = cookieHeader.split(';').map((p) => p.trim());
+  const sessionPair = pairs.find((p) => p.startsWith('zola_session='));
+  if (!sessionPair) return null;
+  try {
+    const raw = decodeURIComponent(sessionPair.slice('zola_session='.length));
+    return verifySessionToken(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function parseAuthHeader(authHeader: string | undefined): AuthSession | null {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice('Bearer '.length).trim();
+  return verifySessionToken(token);
+}
+
 export function attachAuth(req: AuthenticatedRequest, _res: Response, next: NextFunction) {
-  const session = parseSessionCookie(req.headers.cookie);
+  const session =
+    parseSessionCookie(req.headers.cookie) || parseAuthHeader(req.headers.authorization);
   if (session) {
     const userRow = db.prepare('SELECT id, role, status FROM users WHERE id = ?').get(session.userId) as
       | { id: number; role: string; status: string }

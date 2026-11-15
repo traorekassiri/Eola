@@ -1,19 +1,27 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, Mail, MapPin, User } from 'lucide-react';
-import registerWomanImg from '../assets/images/zola_register_woman_1794726545235.jpg';
-import loginManImg from '../assets/images/zola_login_man_1794726545582.jpg';
-import { AFRICAN_COUNTRIES, apiFetch, setCsrfToken } from '../lib/api';
-import type { AppRoute, SiteSettings, UserProfile } from '../types';
+import { apiFetch, setCsrfToken, setSessionToken } from '../lib/api';
+import { useI18n } from '../lib/i18n';
+import type { AppRoute, RegisterPrefill, SiteSettings, UserProfile } from '../types';
+import { LanguageToggle } from './LanguageToggle';
 import { ZolaLogo } from './ZolaLogo';
 
 interface AuthViewsProps {
   mode: 'register' | 'login' | 'forgot-password';
   settings: SiteSettings;
+  registerPrefill?: RegisterPrefill | null;
   onNavigate: (route: AppRoute) => void;
   onAuthSuccess: (user: UserProfile) => void;
 }
 
-export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate, onAuthSuccess }) => {
+export const AuthViews: React.FC<AuthViewsProps> = ({
+  mode,
+  settings,
+  registerPrefill,
+  onNavigate,
+  onAuthSuccess,
+}) => {
+  const { lang, t, tCountry, countries, brandName } = useI18n();
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -32,11 +40,21 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
   const [regPassword, setRegPassword] = useState('');
   const [regConfirm, setRegConfirm] = useState('');
   const [birthDate, setBirthDate] = useState('1999-05-15');
-  const [gender, setGender] = useState<'Femme' | 'Homme'>('Femme');
-  const [seekingGender, setSeekingGender] = useState<'Homme' | 'Femme' | 'Tous'>('Homme');
-  const [country, setCountry] = useState('Burkina Faso');
-  const [city, setCity] = useState('Ouagadougou');
+  const [gender, setGender] = useState<'Femme' | 'Homme'>(registerPrefill?.gender || 'Femme');
+  const [seekingGender, setSeekingGender] = useState<'Homme' | 'Femme' | 'Tous'>(
+    registerPrefill?.seeking_gender || 'Homme'
+  );
+  const [country, setCountry] = useState(registerPrefill?.country || 'Burkina Faso');
+  const [city, setCity] = useState(registerPrefill?.city || 'Ouagadougou');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+
+  useEffect(() => {
+    if (!registerPrefill) return;
+    if (registerPrefill.gender) setGender(registerPrefill.gender);
+    if (registerPrefill.seeking_gender) setSeekingGender(registerPrefill.seeking_gender);
+    if (registerPrefill.country) setCountry(registerPrefill.country);
+    if (registerPrefill.city !== undefined) setCity(registerPrefill.city);
+  }, [registerPrefill]);
 
   // Forgot password state
   const [resetEmail, setResetEmail] = useState('');
@@ -49,30 +67,31 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
     settings.oauth_facebook_enabled === '1' ||
     settings.oauth_apple_enabled === '1';
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const performLogin = async (email: string, password: string, totp?: string) => {
     setError('');
     setLoading(true);
     try {
       const data = await apiFetch<{
         user?: UserProfile;
         csrfToken?: string;
+        sessionToken?: string;
         two_factor_required?: boolean;
       }>('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
-          email: loginEmail,
-          password: loginPassword,
+          email,
+          password,
           remember_me: rememberMe,
-          totp_code: twoFactorRequired ? totpCode.trim() : undefined,
+          totp_code: totp,
         }),
       });
       if (data.two_factor_required) {
         setTwoFactorRequired(true);
-        setInfoMsg('Entrez le code à 6 chiffres généré par votre application 2FA.');
+        setInfoMsg(t('auth.login.2faPrompt'));
         return;
       }
       if (data.user && data.csrfToken) {
+        if (data.sessionToken) setSessionToken(data.sessionToken);
         setCsrfToken(data.csrfToken);
         onAuthSuccess(data.user);
       }
@@ -83,20 +102,25 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
     }
   };
 
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performLogin(loginEmail, loginPassword, twoFactorRequired ? totpCode.trim() : undefined);
+  };
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (regPassword !== regConfirm) {
-      setError('Les mots de passe ne correspondent pas.');
+      setError(t('auth.register.mismatch'));
       return;
     }
     if (!acceptedTerms) {
-      setError("Veuillez accepter les conditions d'utilisation.");
+      setError(t('auth.register.mustAccept'));
       return;
     }
     setLoading(true);
     try {
-      const data = await apiFetch<{ user: UserProfile; csrfToken: string }>('/api/auth/register', {
+      const data = await apiFetch<{ user: UserProfile; csrfToken: string; sessionToken?: string }>('/api/auth/register', {
         method: 'POST',
         body: JSON.stringify({
           full_name: fullName,
@@ -111,6 +135,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
           accepted_terms: acceptedTerms,
         }),
       });
+      if (data.sessionToken) setSessionToken(data.sessionToken);
       setCsrfToken(data.csrfToken);
       onAuthSuccess(data.user);
     } catch (err) {
@@ -160,30 +185,36 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
     }
   };
 
-  const sidePhoto = mode === 'register' ? registerWomanImg : loginManImg;
+  const sidePhoto =
+    mode === 'register'
+      ? settings.auth_register_image_url || '/media/zola_register_woman_1794726545235.jpg'
+      : settings.auth_login_image_url || '/media/zola_login_man_1794726545582.jpg';
 
   return (
-    <div className="min-h-screen bg-[#0B0909] text-stone-100 flex flex-col">
-      <div className="flex items-center justify-between px-4 py-4 sm:px-8 border-b border-white/8">
+    <div className="min-h-screen w-full max-w-full overflow-x-clip bg-[#0B0909] text-stone-100 flex flex-col">
+      <div className="flex items-center justify-between gap-2 sm:gap-3 px-3 py-3.5 sm:px-8 border-b border-white/8">
         <button type="button" onClick={() => onNavigate('landing')} className="focus-visible:outline-none">
           <ZolaLogo />
         </button>
-        <button
-          type="button"
-          onClick={() => onNavigate('landing')}
-          className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs sm:text-sm text-stone-300 hover:bg-white/10"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Retour à l'accueil
-        </button>
+        <div className="flex items-center gap-2.5">
+          <LanguageToggle compact />
+          <button
+            type="button"
+            onClick={() => onNavigate('landing')}
+            className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs sm:text-sm text-stone-300 hover:bg-white/10"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t('auth.backHome')}
+          </button>
+        </div>
       </div>
 
       <div className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 items-stretch gap-0 lg:grid-cols-12 lg:py-8 lg:px-6">
-        {/* Left Photographic Panel matching mockup */}
+        {/* Left Photographic Panel */}
         <div className="relative hidden lg:block lg:col-span-5 overflow-hidden rounded-l-3xl border border-r-0 border-white/10 bg-[#140F0E]">
           <img
             src={sidePhoto}
-            alt={mode === 'register' ? 'Femme africaine souriante sur ZOLA' : 'Homme africain souriant sur ZOLA'}
+            alt={brandName}
             className="h-full w-full object-cover object-top"
           />
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#0B0909] via-transparent to-transparent opacity-80" />
@@ -191,11 +222,11 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
           <div className="absolute bottom-8 left-8 right-8">
             <p className="font-display text-2xl font-bold text-white leading-snug">
               {mode === 'register'
-                ? 'Rejoignez une communauté authentique et bienveillante.'
-                : 'Ravi de vous retrouver sur ZOLA.'}
+                ? t('auth.side.register')
+                : t('auth.side.login')}
             </p>
             <p className="mt-2 text-sm text-stone-300">
-              Des rencontres sincères partout en Afrique et dans la diaspora.
+              {t('auth.side.sub')}
             </p>
           </div>
         </div>
@@ -206,8 +237,8 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
             {mode === 'login' && (
               <>
                 <div className="text-center lg:text-left">
-                  <h1 className="font-display text-3xl font-extrabold text-white">Connexion</h1>
-                  <p className="mt-1.5 text-sm text-stone-400">Bon retour parmi nous !</p>
+                  <h1 className="font-display text-3xl font-extrabold text-white">{t('auth.login.title')}</h1>
+                  <p className="mt-1.5 text-sm text-stone-400">{t('auth.login.sub')}</p>
                 </div>
 
                 {error && (
@@ -232,7 +263,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                           required
                           value={loginEmail}
                           onChange={(e) => setLoginEmail(e.target.value)}
-                          placeholder="Votre email"
+                          placeholder={t('auth.login.emailPlaceholder')}
                           className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-4 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                         />
                       </div>
@@ -244,13 +275,13 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                           required
                           value={loginPassword}
                           onChange={(e) => setLoginPassword(e.target.value)}
-                          placeholder="Mot de passe"
+                          placeholder={t('auth.login.passwordPlaceholder')}
                           className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-11 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                         />
                         <button
                           type="button"
                           onClick={() => setShowPass((v) => !v)}
-                          aria-label={showPass ? 'Masquer' : 'Afficher'}
+                          aria-label="Toggle password"
                           className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-white"
                         >
                           {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -265,14 +296,14 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                             onChange={(e) => setRememberMe(e.target.checked)}
                             className="h-4 w-4 rounded border-white/20 bg-white/5 accent-orange-500"
                           />
-                          Se souvenir de moi
+                          {t('auth.login.rememberMe')}
                         </label>
                         <button
                           type="button"
                           onClick={() => onNavigate('forgot-password')}
                           className="font-medium text-amber-400 hover:text-amber-300"
                         >
-                          Mot de passe oublié ?
+                          {t('auth.login.forgot')}
                         </button>
                       </div>
                     </>
@@ -289,7 +320,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                           autoFocus
                           value={totpCode}
                           onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                          placeholder="Code 2FA à 6 chiffres"
+                          placeholder={t('auth.login.2faPlaceholder')}
                           className="w-full rounded-xl border border-amber-400/40 bg-white/5 pl-10 pr-4 py-3 text-sm tracking-widest font-mono text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                         />
                       </div>
@@ -302,7 +333,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                         }}
                         className="text-xs text-stone-400 hover:text-white underline"
                       >
-                        Revenir aux identifiants
+                        {t('auth.login.backToCreds')}
                       </button>
                     </div>
                   )}
@@ -312,7 +343,11 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                     disabled={loading}
                     className="zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-600/25 disabled:opacity-60"
                   >
-                    {loading ? 'Connexion...' : twoFactorRequired ? 'Vérifier le code 2FA' : 'Se connecter'}
+                    {loading
+                      ? t('auth.login.submitting')
+                      : twoFactorRequired
+                        ? t('auth.login.verify2fa')
+                        : t('auth.login.submit')}
                   </button>
                 </form>
 
@@ -320,7 +355,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                   <div className="space-y-3 pt-2">
                     <div className="flex items-center gap-3 text-xs text-stone-500">
                       <div className="h-px flex-1 bg-white/10" />
-                      <span>Ou se connecter avec</span>
+                      <span>{t('auth.login.oauthSep')}</span>
                       <div className="h-px flex-1 bg-white/10" />
                     </div>
                     <div className="flex justify-center gap-3">
@@ -344,38 +379,48 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                 )}
 
                 <p className="text-center text-sm text-stone-400">
-                  Pas encore de compte ?{' '}
+                  {t('auth.login.noAccount')}{' '}
                   <button
                     type="button"
                     onClick={() => onNavigate('register')}
                     className="font-semibold text-orange-400 hover:text-orange-300"
                   >
-                    Créer un compte
+                    {t('auth.login.createOne')}
                   </button>
                 </p>
 
                 <div className="border-t border-white/8 pt-3 text-center text-xs text-stone-500">
-                  Accès test rapide :{' '}
+                  {t('auth.login.quickTest')}{' '}
                   <button
                     type="button"
+                    disabled={loading}
                     onClick={() => {
+                      setTwoFactorRequired(false);
+                      setTotpCode('');
+                      setInfoMsg('');
                       setLoginEmail('awa@zola.africa');
                       setLoginPassword('Zola2026!');
+                      void performLogin('awa@zola.africa', 'Zola2026!');
                     }}
-                    className="text-stone-300 underline hover:text-white"
+                    className="text-stone-300 underline hover:text-white disabled:opacity-50"
                   >
-                    Membre (Awa)
+                    {t('auth.login.memberDemo')}
                   </button>
                   {' · '}
                   <button
                     type="button"
+                    disabled={loading}
                     onClick={() => {
+                      setTwoFactorRequired(false);
+                      setTotpCode('');
+                      setInfoMsg('');
                       setLoginEmail('admin@zola.africa');
                       setLoginPassword('Zola2026!');
+                      void performLogin('admin@zola.africa', 'Zola2026!');
                     }}
-                    className="text-stone-300 underline hover:text-white"
+                    className="text-orange-400 font-medium underline hover:text-orange-300 disabled:opacity-50"
                   >
-                    Administrateur
+                    {t('auth.login.adminDemo')}
                   </button>
                 </div>
               </>
@@ -384,9 +429,9 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
             {mode === 'register' && (
               <>
                 <div className="text-center lg:text-left">
-                  <h1 className="font-display text-3xl font-extrabold text-white">Créer un compte</h1>
+                  <h1 className="font-display text-3xl font-extrabold text-white">{t('auth.register.title')}</h1>
                   <p className="mt-1.5 text-sm text-stone-400">
-                    Rejoignez notre communauté et trouvez votre âme sœur.
+                    {t('auth.register.sub')}
                   </p>
                 </div>
 
@@ -400,17 +445,17 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                   <div className="space-y-2">
                     {settings.oauth_google_enabled === '1' && (
                       <button type="button" className="w-full rounded-full border border-white/15 bg-white py-2.5 text-sm font-semibold text-stone-900">
-                        Continuer avec Google
+                        {t('auth.register.continueWith', { provider: 'Google' })}
                       </button>
                     )}
                     {settings.oauth_facebook_enabled === '1' && (
                       <button type="button" className="w-full rounded-full bg-[#1877F2] py-2.5 text-sm font-semibold text-white">
-                        Continuer avec Facebook
+                        {t('auth.register.continueWith', { provider: 'Facebook' })}
                       </button>
                     )}
                     {settings.oauth_apple_enabled === '1' && (
                       <button type="button" className="w-full rounded-full bg-black border border-white/20 py-2.5 text-sm font-semibold text-white">
-                        Continuer avec Apple
+                        {t('auth.register.continueWith', { provider: 'Apple' })}
                       </button>
                     )}
                   </div>
@@ -424,7 +469,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       required
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
-                      placeholder="Nom et prénom"
+                      placeholder={t('auth.register.fullName')}
                       className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                   </div>
@@ -436,7 +481,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       required
                       value={regEmail}
                       onChange={(e) => setRegEmail(e.target.value)}
-                      placeholder="Votre email"
+                      placeholder={t('auth.login.emailPlaceholder')}
                       className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                   </div>
@@ -450,7 +495,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                         minLength={8}
                         value={regPassword}
                         onChange={(e) => setRegPassword(e.target.value)}
-                        placeholder="Mot de passe"
+                        placeholder={t('auth.login.passwordPlaceholder')}
                         className="w-full rounded-xl border border-white/12 bg-white/5 pl-10 pr-9 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                       />
                       <button
@@ -467,14 +512,14 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       minLength={8}
                       value={regConfirm}
                       onChange={(e) => setRegConfirm(e.target.value)}
-                      placeholder="Confirmer le mot de passe"
+                      placeholder={t('auth.register.passwordConfirm')}
                       className="w-full rounded-xl border border-white/12 bg-white/5 px-4 py-2.5 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div>
-                      <label className="block text-xs text-stone-400 mb-1">Date de naissance</label>
+                      <label className="block text-xs text-stone-400 mb-1">{t('auth.register.birthDate')}</label>
                       <input
                         type="date"
                         required
@@ -484,47 +529,47 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-stone-400 mb-1">Genre</label>
+                      <label className="block text-xs text-stone-400 mb-1">{t('auth.register.gender')}</label>
                       <select
                         value={gender}
                         onChange={(e) => setGender(e.target.value as 'Femme' | 'Homme')}
                         className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3 py-2 text-sm text-white focus:border-orange-500 focus:outline-none"
                       >
-                        <option value="Femme">Femme</option>
-                        <option value="Homme">Homme</option>
+                        <option value="Femme">{lang === 'en' ? 'Woman' : 'Femme'}</option>
+                        <option value="Homme">{lang === 'en' ? 'Man' : 'Homme'}</option>
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-stone-400 mb-1">Je recherche</label>
+                      <label className="block text-xs text-stone-400 mb-1">{t('auth.register.seeking')}</label>
                       <select
                         value={seekingGender}
                         onChange={(e) => setSeekingGender(e.target.value as 'Homme' | 'Femme' | 'Tous')}
                         className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3 py-2 text-sm text-white focus:border-orange-500 focus:outline-none"
                       >
-                        <option value="Homme">Homme</option>
-                        <option value="Femme">Femme</option>
-                        <option value="Tous">Tous</option>
+                        <option value="Homme">{lang === 'en' ? 'Man' : 'Homme'}</option>
+                        <option value="Femme">{lang === 'en' ? 'Woman' : 'Femme'}</option>
+                        <option value="Tous">{lang === 'en' ? 'Everyone' : 'Tous'}</option>
                       </select>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
-                      <label className="block text-xs text-stone-400 mb-1">Pays</label>
+                      <label className="block text-xs text-stone-400 mb-1">{t('auth.register.country')}</label>
                       <select
                         value={country}
                         onChange={(e) => setCountry(e.target.value)}
                         className="w-full rounded-xl border border-white/12 bg-[#1B1413] px-3 py-2 text-sm text-white focus:border-orange-500 focus:outline-none"
                       >
-                        {AFRICAN_COUNTRIES.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
+                        {countries.map((c) => (
+                          <option key={c.name} value={c.name}>
+                            {tCountry(c.name)}
                           </option>
                         ))}
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-stone-400 mb-1">Ville</label>
+                      <label className="block text-xs text-stone-400 mb-1">{t('auth.register.city')}</label>
                       <div className="relative">
                         <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
                         <input
@@ -532,7 +577,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                           required
                           value={city}
                           onChange={(e) => setCity(e.target.value)}
-                          placeholder="Ville"
+                          placeholder={t('auth.register.city')}
                           className="w-full rounded-xl border border-white/12 bg-white/5 pl-9 pr-3 py-2 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                         />
                       </div>
@@ -547,11 +592,11 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5 accent-orange-500"
                     />
                     <span>
-                      J'ai au moins 18 ans et j'accepte les{' '}
+                      {t('auth.register.termsPrefix')}{' '}
                       <button type="button" onClick={() => onNavigate('legal')} className="text-orange-400 underline">
-                        conditions d'utilisation
+                        {t('auth.register.termsLink')}
                       </button>{' '}
-                      et la politique de confidentialité de ZOLA.
+                      {t('auth.register.termsSuffix')}
                     </span>
                   </label>
 
@@ -560,18 +605,18 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                     disabled={loading}
                     className="zola-gradient zola-gradient-hover w-full rounded-full py-3.5 text-sm font-semibold text-white shadow-lg shadow-orange-600/25 disabled:opacity-60"
                   >
-                    {loading ? 'Création du compte...' : "S'inscrire"}
+                    {loading ? t('auth.register.submitting') : t('auth.register.submit')}
                   </button>
                 </form>
 
                 <p className="text-center text-sm text-stone-400">
-                  Déjà un compte ?{' '}
+                  {t('auth.register.hasAccount')}{' '}
                   <button
                     type="button"
                     onClick={() => onNavigate('login')}
                     className="font-semibold text-orange-400 hover:text-orange-300"
                   >
-                    Se connecter
+                    {t('auth.login.submit')}
                   </button>
                 </p>
               </>
@@ -580,9 +625,9 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
             {mode === 'forgot-password' && (
               <>
                 <div>
-                  <h1 className="font-display text-2xl font-extrabold text-white">Mot de passe oublié</h1>
+                  <h1 className="font-display text-2xl font-extrabold text-white">{t('auth.forgot.title')}</h1>
                   <p className="mt-1.5 text-sm text-stone-400">
-                    Réinitialisez votre accès en toute sécurité.
+                    {t('auth.forgot.sub')}
                   </p>
                 </div>
 
@@ -604,7 +649,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       required
                       value={resetEmail}
                       onChange={(e) => setResetEmail(e.target.value)}
-                      placeholder="Votre adresse email"
+                      placeholder={t('auth.forgot.emailPlaceholder')}
                       className="w-full rounded-xl border border-white/12 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                     <button
@@ -612,7 +657,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       disabled={loading}
                       className="zola-gradient zola-gradient-hover w-full rounded-full py-3 text-sm font-semibold text-white"
                     >
-                      {loading ? 'Envoi...' : 'Recevoir le jeton de réinitialisation'}
+                      {loading ? t('auth.forgot.sending') : t('auth.forgot.sendBtn')}
                     </button>
                   </form>
                 ) : (
@@ -622,7 +667,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       required
                       value={resetToken}
                       onChange={(e) => setResetToken(e.target.value)}
-                      placeholder="Jeton reçu par email"
+                      placeholder={t('auth.forgot.tokenPlaceholder')}
                       className="w-full rounded-xl border border-white/12 bg-white/5 px-4 py-3 text-sm text-white font-mono placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                     <input
@@ -631,7 +676,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       minLength={8}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="Nouveau mot de passe (8 caractères min.)"
+                      placeholder={t('auth.forgot.newPassPlaceholder')}
                       className="w-full rounded-xl border border-white/12 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-stone-500 focus:border-orange-500 focus:outline-none"
                     />
                     <button
@@ -639,7 +684,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                       disabled={loading}
                       className="zola-gradient zola-gradient-hover w-full rounded-full py-3 text-sm font-semibold text-white"
                     >
-                      {loading ? 'Mise à jour...' : 'Valider le nouveau mot de passe'}
+                      {loading ? t('auth.forgot.updating') : t('auth.forgot.confirmBtn')}
                     </button>
                   </form>
                 )}
@@ -649,7 +694,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ mode, settings, onNavigate
                   onClick={() => onNavigate('login')}
                   className="text-sm text-orange-400 hover:text-orange-300"
                 >
-                  Retour à la connexion
+                  {t('auth.forgot.backToLogin')}
                 </button>
               </>
             )}
