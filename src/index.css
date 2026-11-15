@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-body: 'DM Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: #0B0909;
+    color: #F5F2EE;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+.zola-gradient {
+  background: linear-gradient(135deg, #FF6B1A 0%, #E62E2D 100%);
+}
+
+.zola-gradient-hover:hover {
+  background: linear-gradient(135deg, #FF7B33 0%, #F03A39 100%);
+}
+
+.zola-card {
+  background: rgba(22, 17, 16, 0.82);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.zola-ambient-glow {
+  background: radial-gradient(circle at 75% 30%, rgba(255, 91, 26, 0.22), rgba(217, 43, 43, 0.12) 38%, transparent 70%);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom dark scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0F0B0A;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 91, 26, 0.45);
+}

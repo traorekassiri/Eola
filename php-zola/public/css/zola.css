@@ -1,0 +1,83 @@
+:root {
+  --bg: #0b0909;
+  --surface: rgba(22, 17, 16, 0.85);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #f5f2ee;
+  --muted: #a8a29e;
+  --orange: #ff6b1a;
+  --red: #e62e2d;
+  --gold: #f59e0b;
+}
+
+* { box-sizing: border-box; }
+body.zola-body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+.zola-container { max-width: 1200px; margin: 0 auto; padding: 0 1.25rem; }
+.zola-header { border-bottom: 1px solid var(--border); padding: 1rem 0; }
+.zola-nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.zola-brand { font-size: 1.4rem; font-weight: 800; color: var(--orange); text-decoration: none; }
+.zola-links { display: flex; gap: 1.5rem; }
+.zola-links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; }
+.zola-links a:hover { color: var(--text); }
+.zola-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+.zola-btn-primary {
+  display: inline-block; padding: 0.7rem 1.4rem; border-radius: 999px;
+  background: linear-gradient(135deg, var(--orange), var(--red));
+  color: #fff; font-weight: 600; text-decoration: none; border: 0; cursor: pointer;
+}
+.zola-btn-outline {
+  display: inline-block; padding: 0.7rem 1.4rem; border-radius: 999px;
+  border: 1px solid var(--border); background: rgba(255,255,255,0.04);
+  color: var(--text); text-decoration: none;
+}
+.zola-hero { padding: 4rem 0; }
+.zola-hero h1 { font-size: clamp(2rem, 4vw, 3.5rem); margin: 0 0 1rem; }
+.zola-accent { color: var(--orange); }
+.zola-grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; }
+.zola-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 1.25rem; padding: 1.5rem;
+}
+.zola-popular { border: 2px solid var(--gold); }
+.zola-price { font-size: 1.5rem; font-weight: 800; color: var(--gold); }
+.zola-muted { color: var(--muted); font-size: 0.92rem; }
+.zola-auth-wrap { display: flex; justify-content: center; padding: 3rem 1.25rem; }
+.zola-auth-card { width: 100%; max-width: 460px; }
+.zola-form { display: flex; flex-direction: column; gap: 0.85rem; margin: 1.25rem 0; }
+.zola-form input:not([type="checkbox"]),
+.zola-form select,
+.zola-form textarea,
+#zola-msg-form input {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font: inherit;
+}
+.zola-check { display: flex; align-items: center; gap: 0.6rem; font-size: 0.9rem; color: var(--muted); cursor: pointer; }
+.zola-avatar-lg { width: 100%; height: 260px; object-fit: cover; border-radius: 1rem; margin-bottom: 0.85rem; }
+.zola-chat-layout { display: grid; grid-template-columns: 320px 1fr; gap: 1.25rem; padding: 2rem 1.25rem; }
+.zola-conv-row {
+  display: flex; flex-direction: column; gap: 0.25rem;
+  padding: 0.85rem; border-radius: 0.85rem; text-decoration: none; color: var(--text);
+  border: 1px solid transparent;
+}
+.zola-conv-row:hover { background: rgba(255,255,255,0.04); border-color: var(--border); }
+#zola-thread { display: flex; flex-direction: column; gap: 0.65rem; min-height: 360px; max-height: 520px; overflow-y: auto; margin-bottom: 1rem; }
+.zola-bubble { padding: 0.7rem 1rem; border-radius: 1rem; max-width: 75%; background: rgba(255,255,255,0.07); }
+.zola-bubble.me { align-self: flex-end; background: linear-gradient(135deg, var(--orange), var(--red)); }
+.zola-toast {
+  position: fixed; bottom: 1.5rem; right: 1.5rem; padding: 0.85rem 1.25rem;
+  border-radius: 0.9rem; background: #1c1614; border: 1px solid var(--orange); color: var(--text); z-index: 50;
+}
+@media (max-width: 768px) {
+  .zola-chat-layout { grid-template-columns: 1fr; }
+  .zola-links { display: none; }
+}
+

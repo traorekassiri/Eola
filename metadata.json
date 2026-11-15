@@ -1,0 +1,6 @@
+{
+  "name": "ZOLA — Plateforme de Rencontres Africaines",
+  "description": "ZOLA est une plateforme de rencontres africaines authentiques : découverte de profils vérifiés, matchs mutuels, messagerie privée en temps réel, abonnements Premium et espace d'administration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
